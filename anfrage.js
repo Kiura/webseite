@@ -5,18 +5,16 @@
  * und übergibt sie an den dauerhaften Datenbank-Eingang mit Versandwarteschlange.
  *
  * Schutzmassnahmen: Groessenlimit, Rate-Limit je IP, Honeypot, Mindestzeit
- * seit Seitenaufruf, serverseitige Validierung, Escaping in der E-Mail,
+ * seit Seitenaufruf, serverseitige Validierung,
  * Dateiuploads nur als JPEG/PNG/WebP mit Magic-Byte-Pruefung und Groessenlimit.
  *
- * Konfiguration ausschliesslich ueber Umgebungsvariablen (Hostinger: hPanel):
- *   SMTP_HOST     z. B. smtp.hostinger.com
- *   SMTP_PORT     465 (TLS) oder 587 (STARTTLS)
- *   SMTP_SECURE   "true" fuer Port 465, sonst "false"
- *   SMTP_USER     Postfach, z. B. info@unfallx.com
- *   SMTP_PASS     Passwort des Postfachs
- *   Empfaenger aller Website-Anfragen: info@unfallx.com
- *   MAIL_FROM     Absender (Standard: SMTP_USER)
- *   ANFRAGE_LIMIT Anfragen je IP und 10 Minuten (Standard: 8)
+ * Der E-Mail-Versand laeuft ueber die Versandwarteschlange des Portals
+ * (portal/contacts.js, SMTP-Konfiguration siehe .env.example).
+ *
+ * Konfiguration ueber Umgebungsvariablen (Hostinger: hPanel):
+ *   ANFRAGE_LIMIT       Anfragen je IP und 10 Minuten (Standard: 8)
+ *   PORTAL_TRUST_PROXY  "true" nur hinter dem Hostinger-Proxy: dann zaehlt der
+ *                       letzte X-Forwarded-For-Eintrag als Client-IP
  */
 'use strict';
 
@@ -26,7 +24,6 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;   // 5 MB je Foto
 const MIN_FORM_MS = 3000;                 // Mindestzeit zwischen Laden und Senden
 const WINDOW_MS = 10 * 60 * 1000;
 const LIMIT = Math.max(1, parseInt(process.env.ANFRAGE_LIMIT || '8', 10) || 8);
-const MAIL_TO = 'info@unfallx.com';
 
 
 /* ---------- Rate-Limit (im Speicher, je Prozess) ------------------------- */
@@ -45,7 +42,10 @@ function rateLimited(ip) {
 }
 
 function clientIp(req) {
-  const xf = (req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  // Nur hinter dem vertrauenswuerdigen Proxy den letzten Hop nehmen; der erste
+  // Eintrag in X-Forwarded-For ist vom Client frei waehlbar.
+  const trusted = process.env.PORTAL_TRUST_PROXY === 'true';
+  const xf = trusted ? String(req.headers['x-forwarded-for'] || '').split(',').pop().trim() : '';
   return xf || (req.socket && req.socket.remoteAddress) || 'unbekannt';
 }
 
@@ -57,9 +57,6 @@ function text(v, max) {
 }
 function einzeilig(v, max) {
   return text(v, max).replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ');
-}
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function istEmail(s) {
   return /^[^\s@]{1,64}@[^\s@]{1,255}\.[a-z]{2,24}$/i.test(s);
@@ -176,11 +173,6 @@ function pruefe(body) {
 }
 
 /* ---------- Ausgabe ------------------------------------------------------- */
-
-const LABEL = {
-  anliegen: { unfallgutachten: 'Unfallgutachten', wertgutachten: 'Wertgutachten', kostenvoranschlag: 'Kostenvoranschlag / Schadenkalkulation', sonstiges: 'Allgemeine Anfrage', '': 'Allgemeine Anfrage' },
-  kontaktweg: { telefon: 'Telefon', whatsapp: 'WhatsApp', email: 'E-Mail' }
-};
 
 function antwort(res, status, obj, headers) {
   const body = JSON.stringify(obj);
