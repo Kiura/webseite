@@ -20,7 +20,9 @@ function createFileStorage(env = process.env, options = {}) {
   const keys = ['PORTAL_S3_BUCKET', 'PORTAL_S3_REGION', 'PORTAL_S3_ACCOUNT_ID', 'PORTAL_S3_ACCESS_KEY_ID', 'PORTAL_S3_SECRET_ACCESS_KEY'];
   const configured = keys.every(key => !!env[key]);
   if (!configured) {
-    if (backend === 's3' || keys.some(key => !!env[key])) throw failure('FILE_STORAGE_CONFIGURATION');
+    if (backend === 's3') throw failure('FILE_STORAGE_CONFIGURATION');
+    // Database backend stays usable: an incomplete S3 setup must not take the whole portal (including login) offline.
+    if (keys.some(key => !!env[key]) && env.NODE_ENV !== 'test') console.warn('S3 configuration incomplete (' + keys.filter(key => !env[key]).join(', ') + ' missing); originals stay in the database until all values are set.');
     return null;
   }
   const bucket = env.PORTAL_S3_BUCKET, region = env.PORTAL_S3_REGION, account = env.PORTAL_S3_ACCOUNT_ID;

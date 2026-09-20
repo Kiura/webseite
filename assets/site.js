@@ -1,7 +1,9 @@
 /* UNFALLX – kleine Helfer, ohne Framework */
 (function () {
   'use strict';
-  if(['unfallx.com','www.unfallx.com'].includes(location.hostname)&&location.pathname==='/'&&['gutachten','anfrage','leistungen','vorteile','ablauf','halle','unfallservice','ueber-uns','vertrauen','desag-zertifikat','bewertungen','einsatzgebiet','ratgeber','faq','schadenbilder','standort'].includes(location.hash.slice(1))){location.replace('/ueber-uns'+location.search+location.hash);return;}
+  /* Alte Startseiten-Anker auf die Abschnitte von /ueber-uns umleiten (gleiche Zuordnung wie portal/hosts.js). */
+  var ALTE_ANKER={gutachten:'leistungen',anfrage:'kontakt',leistungen:'leistungen',vorteile:'arbeitsweise',ablauf:'begutachtung',halle:'halle',unfallservice:'unfallservice','ueber-uns':'unternehmen',vertrauen:'desag-zertifikat','desag-zertifikat':'desag-zertifikat',bewertungen:'bewertungen',einsatzgebiet:'einsatzgebiete',ratgeber:'ratgeber',faq:'gutachten-fragen',schadenbilder:'schadenbilder',standort:'standort'};
+  if(['unfallx.com','www.unfallx.com'].includes(location.hostname)&&location.pathname==='/'&&Object.prototype.hasOwnProperty.call(ALTE_ANKER,location.hash.slice(1))){location.replace('/ueber-uns'+location.search+'#'+ALTE_ANKER[location.hash.slice(1)]);return;}
 
 
   /* Deutsche Oberflächentexte. */
