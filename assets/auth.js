@@ -27,8 +27,8 @@ async function enterPortal(){let m;try{m=await api('/me');}catch{throw new Error
 async function providers(){
  const box=$('[data-oauth-buttons]');if(!box)return;
  const section=$('[data-oauth-section]'),r=await api('/oauth/providers');
- const available=r.providers.filter(p=>p.enabled&&['google','apple'].includes(p.id));
- box.innerHTML=available.map(p=>`<button class="oauth-button" type="button" data-oauth="${p.id}">${p.id==='google'?'<img src="/assets/google-g.png" alt="" width="20" height="20" aria-hidden="true">':''}<span>Mit ${esc(p.name)} anmelden</span></button>`).join('');
+ const available=r.providers.filter(p=>p.enabled&&['0account','google','apple'].includes(p.id));
+ box.innerHTML=available.map(p=>`<button class="oauth-button" type="button" data-oauth="${p.id}">${p.id==='google'?'<img src="/assets/google-g.png" alt="" width="20" height="20" aria-hidden="true">':''}${p.id==='0account'?'<img src="/assets/0account-logo.svg" alt="" width="20" height="20" aria-hidden="true">':''}<span>Mit ${esc(p.name)} anmelden</span></button>`).join('');
  if(section)section.hidden=!available.length;
  box.querySelectorAll('[data-oauth]').forEach(b=>b.addEventListener('click',async()=>{b.disabled=true;try{const r=await api('/oauth/start',{provider:b.dataset.oauth});location.assign(r.redirect);}catch(e){message(e.message,true);b.disabled=false;}}));
 }

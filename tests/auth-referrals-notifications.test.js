@@ -74,4 +74,45 @@ test('OAuth authorization-code success, onboarding and explicit linking never me
  }finally{global.fetch=originalFetch;await h.close();}
 });
 
+test('0account signs EdDSA and registers a partner through the same authorization-code flow',async()=>{
+ // 0account signiert mit EdDSA statt RS256 und liefert seine Adressen je Umgebung.
+ const ISSUER='https://staging-v1.0account.com';
+ const {generateKeyPair,exportJWK,SignJWT,createLocalJWKSet}=await import('jose'),pair=await generateKeyPair('Ed25519'),key=await exportJWK(pair.publicKey);key.kid='zeroaccount-test';key.alg='EdDSA';key.use='sig';
+ const settings={name:'0account',auth:ISSUER+'/oauth/authorize',token:ISSUER+'/oauth/token',keys:ISSUER+'/.well-known/jwks.json',issuer:ISSUER,alg:'EdDSA'};
+ const sign=claims=>new SignJWT({sub:'zero-subject',email:'zero@example.com',email_verified:true,nonce:'nonce-1',...claims}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(claims?.iss||ISSUER).setAudience(claims?.aud||'zero-client').setIssuedAt().setExpirationTime(claims?.exp||'5m').sign(pair.privateKey);
+ // Ein RS256-Token darf für 0account niemals akzeptiert werden und umgekehrt.
+ const keys=createLocalJWKSet({keys:[key]});
+ assert.equal((await verifyIdentity(await sign(),'0account','zero-client','nonce-1',keys,settings)).sub,'zero-subject');
+ await assert.rejects(verifyIdentity(await sign({iss:'https://evil.example'}),'0account','zero-client','nonce-1',keys,settings));
+ await assert.rejects(verifyIdentity(await sign(),'0account','other-client','nonce-1',keys,settings));
+ await assert.rejects(verifyIdentity(await sign(),'0account','zero-client','wrong-nonce',keys,settings));
+
+ const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;let nextJWT='',lastExchange=null;
+ global.fetch=async(input,options)=>{const url=String(input);if(url===settings.keys)return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});if(url===settings.token){lastExchange=Object.fromEntries(options.body);return new Response(JSON.stringify({id_token:nextJWT}),{status:200,headers:{'Content-Type':'application/json'}});}return originalFetch(input,options);};
+ try{
+  // Die Schaltfläche steht vor Google und nennt 0account beim Namen.
+  const offered=(await h.call('/oauth/providers')).json.providers;
+  assert.deepEqual(offered.map(p=>p.id),['0account','google','apple']);
+  assert.equal(offered[0].enabled,true);
+
+  const start=await h.call('/oauth/start',{provider:'0account'});assert.equal(start.status,200);
+  const url=new URL(start.json.redirect);assert.equal(url.origin,ISSUER);
+  assert.equal(url.pathname,'/oauth/authorize');
+  // 0account verlangt PKCE S256 und openid im Scope, sonst verweigert es den Start.
+  assert.equal(url.searchParams.get('code_challenge_method'),'S256');
+  assert.match(url.searchParams.get('scope'),/openid/);
+  assert.equal(url.searchParams.get('client_id'),'zero-client');
+  const state=url.searchParams.get('state');
+  nextJWT=await sign({nonce:url.searchParams.get('nonce')});
+  const result=await h.call('/oauth/0account/callback?state='+state+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});
+  assert.equal(result.status,303);
+  assert.equal(result.location,'/konto-vervollstaendigen');
+  assert.equal(lastExchange.redirect_uri,'http://localhost/api/portal/oauth/0account/callback');
+  assert.equal(lastExchange.client_secret,'zero-secret');
+  assert.equal(Buffer.from(D.hash(lastExchange.code_verifier),'hex').toString('base64url'),url.searchParams.get('code_challenge'));
+  const cookie=result.cookie.match(/ux_onboarding=[a-f0-9]{64}/)[0];
+  assert.equal((await h.call('/oauth/profile',undefined,{cookie})).json.email,'zero@example.com');
+ }finally{global.fetch=originalFetch;await h.close();}
+});
+
 test('Registration mail failure leaves no account or usable token; retry delivers one complete branded email',async()=>{const h=await harness();try{const data={email:'mail-failure@example.com',company:'Testbetrieb GmbH',contact:'Testpartner',street:'Teststraße 1',postcode:'10115',city:'Berlin',type:'Werkstatt',phone:'030123456',privacy:true,terms:true,password};h.fail(true);assert.equal((await h.call('/register',data)).status,503);assert.equal(await h.store.transaction(s=>s.get('user',D.hash(data.email))),null);assert.equal((await h.store.transaction(s=>s.list('token'))).length,0);h.fail(false);assert.equal((await h.call('/register',data)).status,200);assert.equal(h.messages.length,1);assert.match(h.messages[0].html,/data-unfallx-email="v2"/);assert.equal((h.messages[0].html.match(/cid:unfallx-logo/g)||[]).length,1);}finally{await h.close();}});
