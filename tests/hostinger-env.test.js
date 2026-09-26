@@ -67,3 +67,16 @@ test('autoiXpert credentials only load as a consistent pair from the private hos
  assert.equal(loadHostingerAutoixpertEnv(dir,{AUTOIXPERT_API_KEY:'other'},()=>fixture),false);
  assert.equal(loadHostingerAutoixpertEnv(dir,{},()=> 'AUTOIXPERT_API_KEY=test'),false);
 });
+
+test('0account credentials only load as a consistent pair; the issuer stays optional',()=>{
+ const {loadHostingerZeroaccountEnv}=require('../portal/hostinger-env'),dir='/home/u123/domains/unfallx.com/hbuilds/current/nodejs';
+ const fixture='ZEROACCOUNT_CLIENT_ID=client\nZEROACCOUNT_CLIENT_SECRET=test-secret\nZEROACCOUNT_ISSUER=https://v1.0account.com\nUNRELATED=value',env={};
+ assert.equal(loadHostingerZeroaccountEnv(dir,env,()=>fixture),true);assert.deepEqual(env,{ZEROACCOUNT_CLIENT_ID:'client',ZEROACCOUNT_CLIENT_SECRET:'test-secret',ZEROACCOUNT_ISSUER:'https://v1.0account.com'});
+ assert.equal(loadHostingerZeroaccountEnv('/tmp/app',{},()=>assert.fail('Unexpected read')),false);
+ assert.equal(loadHostingerZeroaccountEnv(dir,{ZEROACCOUNT_CLIENT_ID:'other'},()=>fixture),false);
+ assert.equal(loadHostingerZeroaccountEnv(dir,{},()=> 'ZEROACCOUNT_CLIENT_ID=client'),false);
+ // Ohne Adresse bleibt die Produktionsadresse gültig, die Zugangsdaten laden trotzdem.
+ const withoutIssuer={};
+ assert.equal(loadHostingerZeroaccountEnv(dir,withoutIssuer,()=> 'ZEROACCOUNT_CLIENT_ID=client\nZEROACCOUNT_CLIENT_SECRET=test-secret'),true);
+ assert.equal(withoutIssuer.ZEROACCOUNT_ISSUER,undefined);
+});
