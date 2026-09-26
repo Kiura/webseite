@@ -28,6 +28,21 @@ const companyFields=identity=>{
  const pick=(key,max)=>text(typeof fields[key]==='string'?fields[key]:'',max);
  return {name:pick('company',180),street:pick('street',180),postcode:pick('postcode',12),city:pick('city',100),type:pick('companyType',30)};
 };
+// Der Anbieter ersetzt das Formular nur, wenn er wirklich alles mitbringt, was
+// companyData verlangt, einschließlich der Zustimmungen. Fehlt ein Feld oder
+// ist die Unternehmensart keine der vier zulässigen, wird weiterhin das
+// Formular gezeigt: eine halb ausgefüllte Registrierung ist schlechter als
+// eine, die zwei Angaben erfragt.
+const COMPANY_TYPES=['Werkstatt','Gutachter / Fotopartner','Abschleppdienst','Sonstiges Unternehmen'];
+function completeRegistration(identity,contact,phone,company){
+ const fields=identity[ZEROACCOUNT_FIELDS];
+ if(!fields||typeof fields!=='object')return null;
+ const consented=value=>value===true||value==='true';
+ if(!consented(fields.termsAndConditions)||!consented(fields.privacyPolicy))return null;
+ if(!contact||!phone||!COMPANY_TYPES.includes(company.type))return null;
+ if(!company.name||!company.street||!company.postcode||!company.city)return null;
+ return {company:company.name,contact,phone,street:company.street,postcode:company.postcode,city:company.city,type:company.type};
+}
 // config überschreibt den Tabelleneintrag, damit 0account seine umgebungs-
 // abhängigen Adressen mitgeben kann. Der Schlüsselcache hängt deshalb an der
 // JWKS-Adresse, nicht am Anbieternamen: sonst würde Test gegen Produktion prüfen.
@@ -78,9 +93,24 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
     assert(identity.email_verified===true||identity.email_verified==='true','Deine E-Mail-Adresse muss beim Anbieter bestätigt sein.',401);const address=email(identity.email);
     // Existing accounts must explicitly link from an authenticated, recent session; never merge by email.
     if(await s.get('user',hash(address))||address===(env.PORTAL_ADMIN_EMAIL||'info@unfallx.com'))return {redirect:'/login?oauth=link_required'};
-    checkWorkspace({role:'partner'});const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,email:address,name:personName(identity),phone:text(identity.phone_number||'',40),company:companyFields(identity),csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};
+    checkWorkspace({role:'partner'});const contact=personName(identity),phone=text(identity.phone_number||'',40),company=companyFields(identity);
+    // Bringt der Anbieter alles mit, entsteht das Partnerkonto direkt; der
+    // Betrieb wird wie bei jeder Registrierung erst nach Prüfung freigegeben.
+    const direct=completeRegistration(identity,contact,phone,company);
+    if(direct){
+     const co=companyData(direct),companyId=id();
+     await s.put('company',{...co,id:companyId,email:address,status:'pending',createdAt:new Date().toISOString(),reviewNote:''});
+     const user={id:hash(address),email:address,name:co.contact,phone:co.phone,role:'partner',companyId,active:true,verifiedAt:new Date().toISOString(),createdAt:new Date().toISOString(),termsVersion:'2026-09-09'};
+     await s.put('user',user,companyId||'internal');
+     await s.put('identity',{id:key,provider:p,userId:user.id,createdAt:new Date().toISOString()},user.id);
+     return {...await issueSession(s,user),registered:address};
+    }
+    const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,email:address,name:contact,phone,company,csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};
    });
    onVerified(p);
+   // Dieselbe Begrüßung wie nach dem Formular. Ein fehlgeschlagener Versand
+   // darf das bereits angelegte Konto nicht zurücknehmen.
+   if(outcome.registered){const e=notice({title:'Willkommen bei UNFALLX Connect',copy:'Dein Partnerkonto ist angelegt. Wir prüfen jetzt deinen Betrieb und stimmen die Zusammenarbeit persönlich mit dir ab.',url:requestOrigin()+outcome.redirect,origin});try{await mail.send(outcome.registered,e.subject,e.text,[],e.html);}catch{console.error('OAuth welcome notice: delivery unavailable');}}
    if(outcome.cookie)res.setHeader('Set-Cookie',[cookie(bindingName,'',0,true),outcome.cookie]);if(outcome.pending)res.setHeader('Set-Cookie',[cookie(bindingName,'',0,true),cookie(pendingName,outcome.pending)]);return redirect(res,outcome.redirect);
   }catch(e){console.error('OAuth callback failed:',p,e.code||e.status||'provider');return redirect(res,'/login?oauth=failed');}
  }

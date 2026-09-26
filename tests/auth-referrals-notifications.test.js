@@ -155,4 +155,45 @@ test('0account prefills the partner form from its claims and never lets /userinf
  }finally{global.fetch=originalFetch;await h.close();}
 });
 
+test('0account registers the partner without the form when it supplies every required field',async()=>{
+ const ISSUER='https://noform-v1.0account.test',NS='https://0account.com/claims/fields';
+ const {generateKeyPair,exportJWK,SignJWT}=await import('jose'),pair=await generateKeyPair('Ed25519'),key=await exportJWK(pair.publicKey);key.kid='zeroaccount-noform';key.alg='EdDSA';key.use='sig';
+ const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;
+ let nextJWT='',userinfo={};
+ global.fetch=async(input,options)=>{const url=String(input);
+  if(url===ISSUER+'/.well-known/jwks.json')return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
+  return originalFetch(input,options);};
+ const complete={company:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',companyType:'Werkstatt',termsAndConditions:true,privacyPolicy:true};
+ async function flow(address,fields){
+  userinfo={[NS]:fields};
+  const start=await h.call('/oauth/start',{provider:'0account'});
+  const url=new URL(start.json.redirect);
+  nextJWT=await new SignJWT({sub:'sub-'+address,email:address,email_verified:true,given_name:'Erika',family_name:'Musterfrau',phone_number:'+4930123456',nonce:url.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);
+  return h.call('/oauth/0account/callback?state='+url.searchParams.get('state')+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});
+ }
+ try{
+  const registered=await flow('vollstaendig@example.com',complete);
+  // Direkt im Portal, ohne Zwischenformular.
+  assert.equal(registered.location,'/portal');
+  assert.match(registered.cookie,/ux_session=/);
+  const user=await h.store.transaction(s=>s.get('user',D.hash('vollstaendig@example.com')));
+  assert.equal(user.role,'partner');assert.equal(user.name,'Erika Musterfrau');assert.equal(user.phone,'+4930123456');
+  assert.ok(user.verifiedAt);assert.equal(user.passwordHash,undefined);
+  const company=await h.store.transaction(s=>s.get('company',user.companyId));
+  assert.equal(company.name,'Musterwerkstatt GmbH');assert.equal(company.city,'Berlin');assert.equal(company.type,'Werkstatt');
+  // Der Betrieb wird wie immer erst nach Prüfung freigegeben.
+  assert.equal(company.status,'pending');
+  // Dieselbe Begrüßung wie nach dem Formular.
+  assert.equal(h.messages.filter(m=>m.to==='vollstaendig@example.com').length,1);
+
+  // Fehlt eine Angabe oder eine Zustimmung, bleibt es beim Formular.
+  for(const missing of [{...complete,city:''},{...complete,termsAndConditions:false},{...complete,privacyPolicy:undefined},{...complete,companyType:'Autohaus'}]){
+   const partial=await flow('teil-'+D.hash(JSON.stringify(missing)).slice(0,8)+'@example.com',missing);
+   assert.equal(partial.location,'/konto-vervollstaendigen');
+  }
+ }finally{global.fetch=originalFetch;await h.close();}
+});
+
 test('Registration mail failure leaves no account or usable token; retry delivers one complete branded email',async()=>{const h=await harness();try{const data={email:'mail-failure@example.com',company:'Testbetrieb GmbH',contact:'Testpartner',street:'Teststraße 1',postcode:'10115',city:'Berlin',type:'Werkstatt',phone:'030123456',privacy:true,terms:true,password};h.fail(true);assert.equal((await h.call('/register',data)).status,503);assert.equal(await h.store.transaction(s=>s.get('user',D.hash(data.email))),null);assert.equal((await h.store.transaction(s=>s.list('token'))).length,0);h.fail(false);assert.equal((await h.call('/register',data)).status,200);assert.equal(h.messages.length,1);assert.match(h.messages[0].html,/data-unfallx-email="v2"/);assert.equal((h.messages[0].html.match(/cid:unfallx-logo/g)||[]).length,1);}finally{await h.close();}});
