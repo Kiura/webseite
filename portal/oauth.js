@@ -31,20 +31,33 @@ const companyFields=identity=>{
  const consented=value=>value===true||value==='true';
  return {name:pick('companyName',180),street:pick('streetAddress',180),postcode:pick('postalCode',12),city:pick('city',100),type:pick('companyType',30),referralCode:pick('referralCode',32).toUpperCase(),terms:consented(fields.termsAndConditions),privacy:consented(fields.privacyPolicy)};
 };
-// Der Anbieter ersetzt das Formular nur, wenn er wirklich alles mitbringt, was
-// companyData verlangt, einschließlich der Zustimmungen. Fehlt ein Feld oder
-// ist die Unternehmensart keine der vier zulässigen, wird weiterhin das
-// Formular gezeigt: eine halb ausgefüllte Registrierung ist schlechter als
-// eine, die zwei Angaben erfragt.
+// Der Anbieter ersetzt das Formular nur, wenn er alles mitbringt, was
+// companyData verlangt, einschließlich beider Zustimmungen. Fehlt eine Angabe,
+// wird weiterhin das Formular gezeigt: eine halb ausgefüllte Registrierung ist
+// schlechter als eine, die zwei Angaben erfragt.
 const COMPANY_TYPES=['Werkstatt','Gutachter / Fotopartner','Abschleppdienst','Sonstiges Unternehmen'];
+// Die Unternehmensart ist die einzige Angabe, die 0account nicht führen kann:
+// dort sind nur diese vier Werte zulässig und ein Auswahl-Typ existiert nicht.
+// Sie deshalb zur Pflicht zu machen hieße, dass dieser Weg nie greift.
+//
+// Das Formular stellt dieselbe Frage bereits mit Vorauswahl: das Auswahlfeld
+// hat keinen leeren Eintrag, es sendet ohne Zutun "Werkstatt". Wer das Formular
+// abschickt, ohne die Auswahl anzufassen, legt denselben Wert an. Hier wird das
+// also nicht schlechter, sondern gleich — und die Administration prüft den
+// Betrieb ohnehin vor der Freischaltung und kann die Art dort richtigstellen.
+const DEFAULT_COMPANY_TYPE='Werkstatt';
 function completeRegistration(identity,contact,phone,company){
  const fields=identity[ZEROACCOUNT_FIELDS];
  if(!fields||typeof fields!=='object')return null;
  const consented=value=>value===true||value==='true';
  if(!consented(fields.termsAndConditions)||!consented(fields.privacyPolicy))return null;
- if(!contact||!phone||!COMPANY_TYPES.includes(company.type))return null;
+ if(!contact||!phone)return null;
  if(!company.name||!company.street||!company.postcode||!company.city)return null;
- return {company:company.name,contact,phone,street:company.street,postcode:company.postcode,city:company.city,type:company.type};
+ // Eine mitgegebene Art wird nur übernommen, wenn sie zulässig ist; ein
+ // unbekannter Wert fällt auf die Vorauswahl zurück statt die Eingabe zu
+ // zerbrechen.
+ const type=COMPANY_TYPES.includes(company.type)?company.type:DEFAULT_COMPANY_TYPE;
+ return {company:company.name,contact,phone,street:company.street,postcode:company.postcode,city:company.city,type};
 }
 // config überschreibt den Tabelleneintrag, damit 0account seine umgebungs-
 // abhängigen Adressen mitgeben kann. Der Schlüsselcache hängt deshalb an der

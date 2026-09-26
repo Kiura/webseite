@@ -129,9 +129,9 @@ test('0account prefills the partner form from its claims and never lets /userinf
   return originalFetch(input,options);};
  try{
   // Der Anbieter kennt Firma und Anschrift; das Formular übernimmt sie.
-  // Ohne companyType bleibt es beim Formular — so sieht es produktiv aus, weil
-  // die Unternehmensart als Auswahlfeld nicht über 0account kommen kann.
-  userinfo={'https://0account.com/claims/fields':{companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',referralCode:'ux-aaaaaaaaaaaa',termsAndConditions:true,privacyPolicy:true},
+  // Ohne Zustimmung zum Datenschutz greift der Rückfall aufs Formular, und
+  // genau dessen Vorbelegung wird hier geprüft.
+  userinfo={'https://0account.com/claims/fields':{companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',companyType:'Werkstatt',referralCode:'ux-aaaaaaaaaaaa',termsAndConditions:true},
    // Ein abweichendes sub/E-Mail aus /userinfo darf die geprüfte Identität nicht ersetzen.
    sub:'attacker-subject',email:'attacker@example.com'};
   const start=await h.call('/oauth/start',{provider:'0account'});
@@ -146,7 +146,7 @@ test('0account prefills the partner form from its claims and never lets /userinf
   assert.equal(profile.name,'Erika Musterfrau');
   assert.equal(profile.phone,'+4930123456');
   // Empfehlungscodes werden in Großschreibung geführt; Zustimmungen kommen als Häkchen zurück.
-  assert.deepEqual(profile.company,{name:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',type:'',referralCode:'UX-AAAAAAAAAAAA',terms:true,privacy:true});
+  assert.deepEqual(profile.company,{name:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',type:'Werkstatt',referralCode:'UX-AAAAAAAAAAAA',terms:true,privacy:false});
   // Ohne eigene Felder bleibt das Formular leer und weiterhin benutzbar.
   userinfo={};
   const second=await h.call('/oauth/start',{provider:'0account'});
@@ -168,7 +168,9 @@ test('0account registers the partner without the form when it supplies every req
   if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
   if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
   return originalFetch(input,options);};
- const complete={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',companyType:'Werkstatt',termsAndConditions:true,privacyPolicy:true};
+ // Ohne companyType: die App kann die Unternehmensart nicht führen, genau so
+ // sieht der Produktivfall aus.
+ const complete={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',termsAndConditions:true,privacyPolicy:true};
  async function flow(address,fields){
   userinfo={[NS]:fields};
   const start=await h.call('/oauth/start',{provider:'0account'});
@@ -185,7 +187,9 @@ test('0account registers the partner without the form when it supplies every req
   assert.equal(user.role,'partner');assert.equal(user.name,'Erika Musterfrau');assert.equal(user.phone,'+4930123456');
   assert.ok(user.verifiedAt);assert.equal(user.passwordHash,undefined);
   const company=await h.store.transaction(s=>s.get('company',user.companyId));
-  assert.equal(company.name,'Musterwerkstatt GmbH');assert.equal(company.city,'Berlin');assert.equal(company.type,'Werkstatt');
+  assert.equal(company.name,'Musterwerkstatt GmbH');assert.equal(company.city,'Berlin');
+  // Ohne Angabe gilt dieselbe Vorauswahl, die das Formular ungefragt sendet.
+  assert.equal(company.type,'Werkstatt');
   // Der Betrieb wird wie immer erst nach Prüfung freigegeben.
   assert.equal(company.status,'pending');
   // Dieselbe Begrüßung wie nach dem Formular.
@@ -198,8 +202,17 @@ test('0account registers the partner without the form when it supplies every req
   assert.equal(werber.location,'/portal');
   assert.ok(await h.store.transaction(s=>s.get('user',D.hash('geworben@example.com'))));
 
+  // Eine zulässige Art wird übernommen, eine unbekannte fällt auf die
+  // Vorauswahl zurück, statt die Registrierung scheitern zu lassen.
+  await flow('abschlepp@example.com',{...complete,companyType:'Abschleppdienst'});
+  const towing=await h.store.transaction(async s=>s.get('company',(await s.get('user',D.hash('abschlepp@example.com'))).companyId));
+  assert.equal(towing.type,'Abschleppdienst');
+  await flow('unbekannt@example.com',{...complete,companyType:'Autohaus'});
+  const unknown=await h.store.transaction(async s=>s.get('company',(await s.get('user',D.hash('unbekannt@example.com'))).companyId));
+  assert.equal(unknown.type,'Werkstatt');
+
   // Fehlt eine Angabe oder eine Zustimmung, bleibt es beim Formular.
-  for(const missing of [{...complete,city:''},{...complete,companyName:''},{...complete,termsAndConditions:false},{...complete,privacyPolicy:undefined},{...complete,companyType:'Autohaus'}]){
+  for(const missing of [{...complete,city:''},{...complete,companyName:''},{...complete,termsAndConditions:false},{...complete,privacyPolicy:undefined}]){
    const partial=await flow('teil-'+D.hash(JSON.stringify(missing)).slice(0,8)+'@example.com',missing);
    assert.equal(partial.location,'/konto-vervollstaendigen');
   }
