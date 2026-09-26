@@ -63,7 +63,16 @@ async function boot(){
  bind('#register-form',async(d,f)=>{message((await api('/register',d)).message);f.reset();});
  const password=$('#password-root');if(password){const token=new URLSearchParams(location.hash.slice(1)).get('token');history.replaceState(null,'',location.pathname);if(token){password.innerHTML='<h2>Dein neues Passwort.</h2><form id="new-password-form">'+passFields+'<button class="btn" type="submit">Passwort speichern</button></form>';bind('#new-password-form',async d=>{const r=await api('/password/finish',{token,password:d.password});password.innerHTML='<h2>Passwort gespeichert.</h2><p>'+esc(r.message)+'</p><a href="/login" class="btn">Zum Login →</a>';});}else bind('#password-request',async d=>message((await api('/password/request',d)).message));}
  const notify=$('#notification-root');if(notify){const p=new URLSearchParams(location.hash.slice(1)),token=p.get('token')||p.get('unsubscribe');history.replaceState(null,'',location.pathname);if(token){notify.innerHTML='<h2>'+ (p.has('unsubscribe')?'Statusmeldungen abbestellen':'Statusmeldungen bestätigen')+'</h2><form id="notification-confirm"><button type="submit" class="btn">'+(p.has('unsubscribe')?'Für diesen Vorgang abbestellen':'E-Mail-Benachrichtigungen aktivieren')+'</button></form>';bind('#notification-confirm',async()=>{const r=await api('/notifications/verify',{token});notify.innerHTML='<h2>Erledigt.</h2><p>'+esc(r.message)+'</p>'+(r.trackingUrl?'<p><a class="btn" href="'+esc(r.trackingUrl)+'">Meinen Bearbeitungsstatus ansehen →</a></p>':'')+'<a href="/app">UNFALLX Connect kennenlernen →</a>';});}}
- const onboarding=$('#oauth-complete');if(onboarding){const profile=await api('/oauth/profile');csrf=profile.csrf;onboarding.querySelector('[name=email]').value=profile.email;onboarding.querySelector('[name=contact]').value=profile.name;bind('#oauth-complete',async d=>{const r=await api('/oauth/complete',d);await enterPortal();});}
+ const onboarding=$('#oauth-complete');if(onboarding){const profile=await api('/oauth/profile');csrf=profile.csrf;onboarding.querySelector('[name=email]').value=profile.email;onboarding.querySelector('[name=contact]').value=profile.name;
+  // Vom Anbieter übernommene Angaben. Nur leere Felder werden gefüllt, damit
+  // eine bereits getroffene Auswahl nicht überschrieben wird; alles bleibt
+  // änderbar. Die Unternehmensart nur bei exakter Übereinstimmung mit einer
+  // der angebotenen Optionen, sonst bliebe ein ungültiger Wert stehen.
+  const fill=(name,value)=>{const field=onboarding.querySelector('[name='+name+']');if(!field||!value||field.value)return;if(field.tagName==='SELECT'&&![...field.options].some(o=>o.value===value))return;field.value=value;};
+  fill('phone',profile.phone);
+  const company=profile.company||{};
+  fill('company',company.name);fill('street',company.street);fill('postcode',company.postcode);fill('city',company.city);fill('type',company.type);
+  bind('#oauth-complete',async d=>{const r=await api('/oauth/complete',d);await enterPortal();});}
 }
 window.addEventListener('hashchange',()=>{const p=new URLSearchParams(location.hash.slice(1));if(/^[a-f0-9]{64}$/.test(p.get('token')||p.get('unsubscribe')||''))location.reload();});
 boot().catch(e=>message(e.message,true)).finally(passwordControls);

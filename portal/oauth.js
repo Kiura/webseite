@@ -7,13 +7,27 @@ const jose=()=>import('jose');
 // 0account-Adressen unterscheiden sich je Umgebung (Test/Produktion) und werden
 // deshalb aus ZEROACCOUNT_ISSUER abgeleitet, siehe zeroaccount() unten.
 const ZEROACCOUNT_DEFAULT_ISSUER='https://v1.0account.com';
-function zeroaccount(env){const base=String(env.ZEROACCOUNT_ISSUER||ZEROACCOUNT_DEFAULT_ISSUER).replace(/\/+$/,'');return {name:'0account',auth:base+'/oauth/authorize',token:base+'/oauth/token',keys:base+'/.well-known/jwks.json',issuer:base,alg:'EdDSA'};}
+function zeroaccount(env){const base=String(env.ZEROACCOUNT_ISSUER||ZEROACCOUNT_DEFAULT_ISSUER).replace(/\/+$/,'');return {name:'0account',auth:base+'/oauth/authorize',token:base+'/oauth/token',keys:base+'/.well-known/jwks.json',userinfo:base+'/oauth/userinfo',issuer:base,alg:'EdDSA'};}
 const providers={
  '0account':zeroaccount(process.env),
  google:{name:'Google',auth:'https://accounts.google.com/o/oauth2/v2/auth',token:'https://oauth2.googleapis.com/token',keys:'https://www.googleapis.com/oauth2/v3/certs',issuer:['https://accounts.google.com','accounts.google.com']},
  apple:{name:'Apple',auth:'https://appleid.apple.com/auth/authorize',token:'https://appleid.apple.com/auth/token',keys:'https://appleid.apple.com/auth/keys',issuer:'https://appleid.apple.com'}
 };
 const keysets=new Map();
+// Google liefert "name", 0account nur "given_name"/"family_name" (OIDC Core
+// §5.1 macht keines davon zur Pflicht). Ohne diese Zusammensetzung bliebe der
+// Ansprechpartner bei 0account leer.
+const personName=identity=>text(identity.name||[identity.given_name,identity.family_name].filter(Boolean).join(' '),120);
+// Eigene Felder eines Anbieters stehen bei 0account unter einem Namensraum,
+// nicht als Standard-Claims. Fehlt der Namensraum, bleibt alles leer und das
+// Formular verhält sich wie bisher.
+const ZEROACCOUNT_FIELDS='https://0account.com/claims/fields';
+const companyFields=identity=>{
+ const fields=identity[ZEROACCOUNT_FIELDS];
+ if(!fields||typeof fields!=='object')return {};
+ const pick=(key,max)=>text(typeof fields[key]==='string'?fields[key]:'',max);
+ return {name:pick('company',180),street:pick('street',180),postcode:pick('postcode',12),city:pick('city',100),type:pick('companyType',30)};
+};
 // config überschreibt den Tabelleneintrag, damit 0account seine umgebungs-
 // abhängigen Adressen mitgeben kann. Der Schlüsselcache hängt deshalb an der
 // JWKS-Adresse, nicht am Anbieternamen: sonst würde Test gegen Produktion prüfen.
@@ -23,6 +37,23 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
  // Anbietertabelle dieser Instanz: 0account aus der übergebenen Umgebung.
  const table={...providers,'0account':zeroaccount(env)};
  const settings=p=>table[p];
+ // Eigene Felder liefert 0account nur unter /userinfo, nicht im ID-Token.
+ // Nur ergänzende Angaben werden übernommen: sub, email und email_verified
+ // bleiben die geprüften Werte aus dem ID-Token, damit eine abweichende
+ // Antwort an dieser Stelle keine andere Identität unterschieben kann.
+ // Scheitert der Abruf, wird die Anmeldung nicht abgebrochen; das Formular
+ // ist dann nur weniger vorausgefüllt.
+ async function extraClaims(p,accessToken){
+  const info=settings(p).userinfo;
+  if(!info||typeof accessToken!=='string'||!accessToken)return {};
+  try{
+   const response=await fetch(info,{headers:{Authorization:'Bearer '+accessToken},signal:AbortSignal.timeout(10000),redirect:'error'});
+   if(!response.ok)return {};
+   const claims=await response.json();
+   const {sub,email,email_verified,...rest}=claims&&typeof claims==='object'?claims:{};
+   return rest;
+  }catch{return {};}
+ }
  const cookie=(name,value,seconds=600,cross=false)=>`${name}=${value}; Path=/; HttpOnly; SameSite=${cross&&!local?'None':'Lax'}; Max-Age=${seconds}${local?'':'; Secure'}`;
  const readCookie=(req,name)=>(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(name+'='))?.slice(name.length+1)||'';
  const clientId=p=>p==='0account'?env.ZEROACCOUNT_CLIENT_ID:p==='google'?env.GOOGLE_CLIENT_ID:env.APPLE_CLIENT_ID;
@@ -39,7 +70,7 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
    const state=await tx(async s=>{const r=await s.get('oauth_state',hash(data.state));assert(r&&r.expires>Date.now()&&r.provider===p&&r.origin===requestOrigin()&&r.binding===hash(readCookie(req,bindingName)),'Dieser Login gehört nicht zu diesem Browser oder ist abgelaufen.',401);await s.remove('oauth_state',r.id);return r;});
    res.setHeader('Set-Cookie',cookie(bindingName,'',0,true));assert(!data.error&&typeof data.code==='string'&&data.code.length<=4096,'Anmeldung abgebrochen.',401);
    const form={client_id:clientId(p),client_secret:await secret(p),code:data.code,grant_type:'authorization_code',redirect_uri:callback(p)};if(p==='google'||p==='0account')form.code_verifier=state.verifier;
-   const response=await fetch(settings(p).token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(form),signal:AbortSignal.timeout(10000),redirect:'error'});assert(response.ok,'Anbieter konnte den Login nicht bestätigen.',401);const result=await response.json();assert(typeof result.id_token==='string','Anbieter konnte den Login nicht bestätigen.',401);const identity=await verifyIdentity(result.id_token,p,clientId(p),state.nonce,undefined,settings(p));
+   const response=await fetch(settings(p).token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(form),signal:AbortSignal.timeout(10000),redirect:'error'});assert(response.ok,'Anbieter konnte den Login nicht bestätigen.',401);const result=await response.json();assert(typeof result.id_token==='string','Anbieter konnte den Login nicht bestätigen.',401);const identity={...await verifyIdentity(result.id_token,p,clientId(p),state.nonce,undefined,settings(p)),...await extraClaims(p,result.access_token)};
    const key=hash(p+':'+identity.sub);const outcome=await tx(async s=>{
     const mapping=await s.get('identity',key);
     if(state.userId){const session=await s.get('session',state.sessionId),user=await s.get('user',state.userId);assert(session&&session.expires>Date.now()&&session.userId===state.userId&&user?.active,'Bitte erneut anmelden und den Anbieter verbinden.',401);assertPortalUser(user);checkWorkspace(user);assert(!mapping||mapping.userId===user.id,'Dieser Anbieter-Zugang ist bereits mit einem anderen Konto verbunden.',409);await s.put('identity',{id:key,provider:p,userId:user.id,createdAt:new Date().toISOString()},user.id);return {linked:true,redirect:user.role==='partner'?'/portal#einstellungen':'/gutachter-portal#einstellungen'};}
@@ -47,7 +78,7 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
     assert(identity.email_verified===true||identity.email_verified==='true','Deine E-Mail-Adresse muss beim Anbieter bestätigt sein.',401);const address=email(identity.email);
     // Existing accounts must explicitly link from an authenticated, recent session; never merge by email.
     if(await s.get('user',hash(address))||address===(env.PORTAL_ADMIN_EMAIL||'info@unfallx.com'))return {redirect:'/login?oauth=link_required'};
-    checkWorkspace({role:'partner'});const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,email:address,name:text(identity.name||'',120),csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};
+    checkWorkspace({role:'partner'});const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,email:address,name:personName(identity),phone:text(identity.phone_number||'',40),company:companyFields(identity),csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};
    });
    onVerified(p);
    if(outcome.cookie)res.setHeader('Set-Cookie',[cookie(bindingName,'',0,true),outcome.cookie]);if(outcome.pending)res.setHeader('Set-Cookie',[cookie(bindingName,'',0,true),cookie(pendingName,outcome.pending)]);return redirect(res,outcome.redirect);
@@ -61,7 +92,7 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
    await tx(async s=>{await rate(s,'oauth-start:'+ip(req),20);if(data.link===true){actor=await auth(req,s);assert(Date.now()-Date.parse(actor.session.createdAt)<15*60000,'Bitte für das Verknüpfen erneut anmelden (höchstens 15 Minuten).',401);}await s.put('oauth_state',{id:hash(state),origin:requestOrigin(),binding:hash(binding),nonce,verifier,provider:p,userId:actor?.user.id||null,sessionId:actor?.session.id||null,expires:Date.now()+10*60000});});
    res.setHeader('Set-Cookie',cookie(bindingName,binding,600,true));const destination=new URL(settings(p).auth);Object.entries({client_id:clientId(p),redirect_uri:callback(p),response_type:'code',scope:p==='apple'?'email':'openid email profile',state,nonce}).forEach(([k,v])=>destination.searchParams.set(k,v));if(p==='google'||p==='0account'){destination.searchParams.set('code_challenge',Buffer.from(hash(verifier),'hex').toString('base64url'));destination.searchParams.set('code_challenge_method','S256');if(p==='google')destination.searchParams.set('prompt','select_account');}else destination.searchParams.set('response_mode','form_post');return {redirect:destination.href};
   }
-  if(path==='/oauth/profile'&&req.method==='GET')return tx(async s=>{const r=await pending(req,s);return {email:r.email,name:r.name,provider:r.provider,csrf:r.csrf};});
+  if(path==='/oauth/profile'&&req.method==='GET')return tx(async s=>{const r=await pending(req,s);return {email:r.email,name:r.name,phone:r.phone||'',company:r.company||{},provider:r.provider,csrf:r.csrf};});
   if(path==='/oauth/complete'&&req.method==='POST'){
    checkWorkspace({role:'partner'});const data=await body(req);assert(data.privacy===true&&data.terms===true,'Bitte Datenschutz und Nutzungsbedingungen bestätigen.');assert(data.typeOfAccount==='partner','Neue Zugänge sind ausschließlich für Partnerbetriebe vorgesehen.');const co=companyData(data),name=co.contact,phone=co.phone;
    const result=await tx(async s=>{const r=await pending(req,s);assert(req.headers['x-csrf-token']===r.csrf,'Bitte die Seite neu laden.',403);assert(!await s.get('user',hash(r.email))&&!await s.get('identity',r.identityId),'Zu dieser Adresse besteht bereits ein Zugang. Bitte normal anmelden und den Anbieter in den Einstellungen verbinden.',409);const companyId=id();await s.put('company',{...co,id:companyId,email:r.email,status:'pending',createdAt:new Date().toISOString(),reviewNote:''});const user={id:hash(r.email),email:r.email,name,phone,role:'partner',companyId,active:true,verifiedAt:new Date().toISOString(),createdAt:new Date().toISOString(),termsVersion:'2026-09-09'};await s.put('user',user,companyId||'internal');await s.put('identity',{id:r.identityId,provider:r.provider,userId:user.id,createdAt:new Date().toISOString()},user.id);if(data.referralCode)await referrals.attribute(s,user,text(data.referralCode,32).toUpperCase());await s.remove('oauth_pending',r.id);return {...await issueSession(s,user),email:r.email};});
