@@ -106,6 +106,8 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
      const user={id:hash(address),email:address,name:co.contact,phone:co.phone,role:'partner',companyId,active:true,verifiedAt:new Date().toISOString(),createdAt:new Date().toISOString(),termsVersion:'2026-09-09'};
      await s.put('user',user,companyId||'internal');
      await s.put('identity',{id:key,provider:p,userId:user.id,createdAt:new Date().toISOString()},user.id);
+     // Wie über das Formular: ein mitgegebener Empfehlungscode wird zugeordnet.
+     if(company.referralCode)await referrals.attribute(s,user,company.referralCode);
      return {...await issueSession(s,user),registered:address};
     }
     const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,email:address,name:contact,phone,company,csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};

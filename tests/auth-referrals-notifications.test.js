@@ -129,7 +129,9 @@ test('0account prefills the partner form from its claims and never lets /userinf
   return originalFetch(input,options);};
  try{
   // Der Anbieter kennt Firma und Anschrift; das Formular übernimmt sie.
-  userinfo={'https://0account.com/claims/fields':{companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',companyType:'Werkstatt',referralCode:'ux-aaaaaaaaaaaa',termsAndConditions:true,privacyPolicy:true},
+  // Ohne companyType bleibt es beim Formular — so sieht es produktiv aus, weil
+  // die Unternehmensart als Auswahlfeld nicht über 0account kommen kann.
+  userinfo={'https://0account.com/claims/fields':{companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',referralCode:'ux-aaaaaaaaaaaa',termsAndConditions:true,privacyPolicy:true},
    // Ein abweichendes sub/E-Mail aus /userinfo darf die geprüfte Identität nicht ersetzen.
    sub:'attacker-subject',email:'attacker@example.com'};
   const start=await h.call('/oauth/start',{provider:'0account'});
@@ -144,7 +146,7 @@ test('0account prefills the partner form from its claims and never lets /userinf
   assert.equal(profile.name,'Erika Musterfrau');
   assert.equal(profile.phone,'+4930123456');
   // Empfehlungscodes werden in Großschreibung geführt; Zustimmungen kommen als Häkchen zurück.
-  assert.deepEqual(profile.company,{name:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',type:'Werkstatt',referralCode:'UX-AAAAAAAAAAAA',terms:true,privacy:true});
+  assert.deepEqual(profile.company,{name:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',type:'',referralCode:'UX-AAAAAAAAAAAA',terms:true,privacy:true});
   // Ohne eigene Felder bleibt das Formular leer und weiterhin benutzbar.
   userinfo={};
   const second=await h.call('/oauth/start',{provider:'0account'});
@@ -166,7 +168,7 @@ test('0account registers the partner without the form when it supplies every req
   if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
   if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
   return originalFetch(input,options);};
- const complete={company:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',companyType:'Werkstatt',termsAndConditions:true,privacyPolicy:true};
+ const complete={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',companyType:'Werkstatt',termsAndConditions:true,privacyPolicy:true};
  async function flow(address,fields){
   userinfo={[NS]:fields};
   const start=await h.call('/oauth/start',{provider:'0account'});
@@ -189,8 +191,15 @@ test('0account registers the partner without the form when it supplies every req
   // Dieselbe Begrüßung wie nach dem Formular.
   assert.equal(h.messages.filter(m=>m.to==='vollstaendig@example.com').length,1);
 
+  // Ein mitgegebener Empfehlungscode geht denselben Weg wie über das Formular
+  // (referrals.attribute ist derzeit wirkungslos, neue Zuordnungen sind
+  // pausiert) und darf die Registrierung nicht stören.
+  const werber=await flow('geworben@example.com',{...complete,referralCode:'ux-bbbbbbbbbbbb'});
+  assert.equal(werber.location,'/portal');
+  assert.ok(await h.store.transaction(s=>s.get('user',D.hash('geworben@example.com'))));
+
   // Fehlt eine Angabe oder eine Zustimmung, bleibt es beim Formular.
-  for(const missing of [{...complete,city:''},{...complete,termsAndConditions:false},{...complete,privacyPolicy:undefined},{...complete,companyType:'Autohaus'}]){
+  for(const missing of [{...complete,city:''},{...complete,companyName:''},{...complete,termsAndConditions:false},{...complete,privacyPolicy:undefined},{...complete,companyType:'Autohaus'}]){
    const partial=await flow('teil-'+D.hash(JSON.stringify(missing)).slice(0,8)+'@example.com',missing);
    assert.equal(partial.location,'/konto-vervollstaendigen');
   }
