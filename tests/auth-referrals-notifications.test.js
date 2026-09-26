@@ -129,7 +129,7 @@ test('0account prefills the partner form from its claims and never lets /userinf
   return originalFetch(input,options);};
  try{
   // Der Anbieter kennt Firma und Anschrift; das Formular übernimmt sie.
-  userinfo={'https://0account.com/claims/fields':{company:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',companyType:'Werkstatt'},
+  userinfo={'https://0account.com/claims/fields':{companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',companyType:'Werkstatt',referralCode:'ux-aaaaaaaaaaaa',termsAndConditions:true,privacyPolicy:true},
    // Ein abweichendes sub/E-Mail aus /userinfo darf die geprüfte Identität nicht ersetzen.
    sub:'attacker-subject',email:'attacker@example.com'};
   const start=await h.call('/oauth/start',{provider:'0account'});
@@ -143,7 +143,8 @@ test('0account prefills the partner form from its claims and never lets /userinf
   // given_name + family_name ergeben den Ansprechpartner; 0account sendet kein "name".
   assert.equal(profile.name,'Erika Musterfrau');
   assert.equal(profile.phone,'+4930123456');
-  assert.deepEqual(profile.company,{name:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',type:'Werkstatt'});
+  // Empfehlungscodes werden in Großschreibung geführt; Zustimmungen kommen als Häkchen zurück.
+  assert.deepEqual(profile.company,{name:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',type:'Werkstatt',referralCode:'UX-AAAAAAAAAAAA',terms:true,privacy:true});
   // Ohne eigene Felder bleibt das Formular leer und weiterhin benutzbar.
   userinfo={};
   const second=await h.call('/oauth/start',{provider:'0account'});

@@ -26,7 +26,10 @@ const companyFields=identity=>{
  const fields=identity[ZEROACCOUNT_FIELDS];
  if(!fields||typeof fields!=='object')return {};
  const pick=(key,max)=>text(typeof fields[key]==='string'?fields[key]:'',max);
- return {name:pick('company',180),street:pick('street',180),postcode:pick('postcode',12),city:pick('city',100),type:pick('companyType',30)};
+ // Zustimmungen kommen als Häkchen zurück; sie werden im Formular vorbelegt,
+ // bleiben aber abwählbar, weil sie dort bestätigt werden müssen.
+ const consented=value=>value===true||value==='true';
+ return {name:pick('companyName',180),street:pick('streetAddress',180),postcode:pick('postalCode',12),city:pick('city',100),type:pick('companyType',30),referralCode:pick('referralCode',32).toUpperCase(),terms:consented(fields.termsAndConditions),privacy:consented(fields.privacyPolicy)};
 };
 // config überschreibt den Tabelleneintrag, damit 0account seine umgebungs-
 // abhängigen Adressen mitgeben kann. Der Schlüsselcache hängt deshalb an der

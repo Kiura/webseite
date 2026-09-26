@@ -71,7 +71,11 @@ async function boot(){
   const fill=(name,value)=>{const field=onboarding.querySelector('[name='+name+']');if(!field||!value||field.value)return;if(field.tagName==='SELECT'&&![...field.options].some(o=>o.value===value))return;field.value=value;};
   fill('phone',profile.phone);
   const company=profile.company||{};
-  fill('company',company.name);fill('street',company.street);fill('postcode',company.postcode);fill('city',company.city);fill('type',company.type);
+  fill('company',company.name);fill('street',company.street);fill('postcode',company.postcode);fill('city',company.city);fill('type',company.type);fill('referralCode',company.referralCode);
+  // Beim Anbieter erteilte Zustimmungen werden angehakt, bleiben aber
+  // abwählbar: abgeschickt wird nur, was hier bestätigt ist.
+  const check=(name,value)=>{const field=onboarding.querySelector('[name='+name+']');if(field&&value)field.checked=true;};
+  check('terms',company.terms);check('privacy',company.privacy);
   bind('#oauth-complete',async d=>{const r=await api('/oauth/complete',d);await enterPortal();});}
 }
 window.addEventListener('hashchange',()=>{const p=new URLSearchParams(location.hash.slice(1));if(/^[a-f0-9]{64}$/.test(p.get('token')||p.get('unsubscribe')||''))location.reload();});
