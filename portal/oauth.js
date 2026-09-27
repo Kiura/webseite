@@ -10,11 +10,12 @@ const providers={
 const keysets=new Map();
 async function verifyIdentity(token,provider,clientId,nonce,keySet){const {jwtVerify,createRemoteJWKSet}=await jose();const p=providers[provider];assert(p,'Unbekannter Anbieter.');if(!keysets.has(provider))keysets.set(provider,createRemoteJWKSet(new URL(p.keys),{timeoutDuration:10000}));const {payload}=await jwtVerify(token,keySet||keysets.get(provider),{issuer:p.issuer,audience:clientId,algorithms:['RS256'],clockTolerance:30,maxTokenAge:'10m',requiredClaims:['exp','iat','sub','nonce']});assert(payload.nonce===nonce&&typeof payload.sub==='string'&&payload.sub.length>0&&payload.sub.length<=255,'Anmeldung konnte nicht bestätigt werden.',401);return payload;}
 function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referrals,requestOrigin=()=>origin,checkWorkspace=()=>{},onVerified=()=>{},nativeComplete=null}){
+ const vault=require('./oauth-tokens').tokenVault(env);
  const local=env.NODE_ENV==='test';const bindingName=local?'ux_oauth':'__Host-ux_oauth',pendingName=local?'ux_onboarding':'__Host-ux_onboarding';
  const cookie=(name,value,seconds=600,cross=false)=>`${name}=${value}; Path=/; HttpOnly; SameSite=${cross&&!local?'None':'Lax'}; Max-Age=${seconds}${local?'':'; Secure'}`;
  const readCookie=(req,name)=>(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(name+'='))?.slice(name.length+1)||'';
  const clientId=p=>p==='google'?env.GOOGLE_CLIENT_ID:env.APPLE_CLIENT_ID;
- const configured=p=>p==='google'?!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET):!!(env.APPLE_CLIENT_ID&&env.APPLE_TEAM_ID&&env.APPLE_KEY_ID&&env.APPLE_PRIVATE_KEY);
+ const configured=p=>p==='google'?!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET):!!(env.APPLE_CLIENT_ID&&env.APPLE_TEAM_ID&&env.APPLE_KEY_ID&&env.APPLE_PRIVATE_KEY&&vault.ready);
  const config=()=>Object.keys(providers).map(p=>({id:p,name:providers[p].name,enabled:configured(p)}));
  const callback=p=>requestOrigin()+'/api/portal/oauth/'+p+'/callback';
  const redirect=(res,to)=>{res.writeHead(303,{Location:to});res.end();return null;};
@@ -30,14 +31,14 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
    res.setHeader('Set-Cookie',cookie(bindingName,'',0,true));assert(!data.error&&typeof data.code==='string'&&data.code.length<=4096,'Anmeldung abgebrochen.',401);
    const form={client_id:clientId(p),client_secret:await secret(p),code:data.code,grant_type:'authorization_code',redirect_uri:callback(p)};if(p==='google')form.code_verifier=state.verifier;
    const response=await fetch(providers[p].token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(form),signal:AbortSignal.timeout(10000),redirect:'error'});assert(response.ok,'Anbieter konnte den Login nicht bestätigen.',401);const result=await response.json();assert(typeof result.id_token==='string','Anbieter konnte den Login nicht bestätigen.',401);const identity=await verifyIdentity(result.id_token,p,clientId(p),state.nonce);
-   const key=hash(p+':'+identity.sub);const outcome=await tx(async s=>{
-    const mapping=await s.get('identity',key);
-    if(state.userId){const session=await s.get('session',state.sessionId),user=await s.get('user',state.userId);assert(session&&session.expires>Date.now()&&session.userId===state.userId&&user?.active,'Bitte erneut anmelden und den Anbieter verbinden.',401);assertPortalUser(user);checkWorkspace(user);assert(!mapping||mapping.userId===user.id,'Dieser Anbieter-Zugang ist bereits mit einem anderen Konto verbunden.',409);await s.put('identity',{id:key,provider:p,userId:user.id,createdAt:new Date().toISOString()},user.id);return {linked:true,redirect:user.role==='partner'?'/portal#einstellungen':'/gutachter-portal#einstellungen'};}
+   const key=hash(p+':'+identity.sub);const protectedToken=p==='apple'?vault.seal(result.refresh_token||result.access_token,key):null;const tokenType=result.refresh_token?'refresh_token':'access_token';const outcome=await tx(async s=>{
+    let mapping=await s.get('identity',key);if(mapping&&protectedToken){mapping={...mapping,protectedToken,tokenType};await s.put('identity',mapping,mapping.userId);}
+    if(state.userId){const session=await s.get('session',state.sessionId),user=await s.get('user',state.userId);assert(session&&session.expires>Date.now()&&session.userId===state.userId&&user?.active,'Bitte erneut anmelden und den Anbieter verbinden.',401);assertPortalUser(user);checkWorkspace(user);assert(!mapping||mapping.userId===user.id,'Dieser Anbieter-Zugang ist bereits mit einem anderen Konto verbunden.',409);await s.put('identity',{id:key,provider:p,userId:user.id,...(protectedToken?{protectedToken,tokenType}:{}),createdAt:new Date().toISOString()},user.id);return {linked:true,redirect:user.role==='partner'?'/portal#einstellungen':'/gutachter-portal#einstellungen'};}
     if(mapping){const user=await s.get('user',mapping.userId);assert(user?.verifiedAt,'Bitte zuerst deine E-Mail bestätigen.',401);return issueSession(s,user);}
     assert(identity.email_verified===true||identity.email_verified==='true','Deine E-Mail-Adresse muss beim Anbieter bestätigt sein.',401);const address=email(identity.email);
     // Existing accounts must explicitly link from an authenticated, recent session; never merge by email.
     if(await s.get('user',hash(address))||address===(env.PORTAL_ADMIN_EMAIL||'info@unfallx.com'))return {redirect:'/login?oauth=link_required'};
-    checkWorkspace({role:'partner'});const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,email:address,name:text(identity.name||'',120),csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};
+    checkWorkspace({role:'partner'});const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,protectedToken,tokenType,email:address,name:text(identity.name||'',120),csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};
    });
    onVerified(p);
    if(nativeRequest&&nativeComplete)return await nativeComplete(req,res,nativeRequest,outcome);
@@ -56,11 +57,18 @@ const p=text(data.provider,20,true);assert(providers[p]&&configured(p),'Diese An
   if(path==='/oauth/profile'&&req.method==='GET')return tx(async s=>{const r=await pending(req,s);return {email:r.email,name:r.name,provider:r.provider,csrf:r.csrf};});
   if(path==='/oauth/complete'&&req.method==='POST'){
    checkWorkspace({role:'partner'});const data=await body(req);assert(data.privacy===true&&data.terms===true,'Bitte Datenschutz und Nutzungsbedingungen bestätigen.');assert(data.typeOfAccount==='partner','Neue Zugänge sind ausschließlich für Partnerbetriebe vorgesehen.');const co=companyData(data),name=co.contact,phone=co.phone;
-   const result=await tx(async s=>{const r=await pending(req,s);assert(req.headers['x-csrf-token']===r.csrf,'Bitte die Seite neu laden.',403);assert(!await s.get('user',hash(r.email))&&!await s.get('identity',r.identityId),'Zu dieser Adresse besteht bereits ein Zugang. Bitte normal anmelden und den Anbieter in den Einstellungen verbinden.',409);const companyId=id();await s.put('company',{...co,id:companyId,email:r.email,status:'pending',createdAt:new Date().toISOString(),reviewNote:''});const user={id:hash(r.email),email:r.email,name,phone,role:'partner',companyId,active:true,verifiedAt:new Date().toISOString(),createdAt:new Date().toISOString(),termsVersion:'2026-09-09'};await s.put('user',user,companyId||'internal');await s.put('identity',{id:r.identityId,provider:r.provider,userId:user.id,createdAt:new Date().toISOString()},user.id);if(data.referralCode)await referrals.attribute(s,user,text(data.referralCode,32).toUpperCase());await s.remove('oauth_pending',r.id);return {...await issueSession(s,user),email:r.email};});
+   const result=await tx(async s=>{const r=await pending(req,s);assert(req.headers['x-csrf-token']===r.csrf,'Bitte die Seite neu laden.',403);assert(!await s.get('user',hash(r.email))&&!await s.get('identity',r.identityId),'Zu dieser Adresse besteht bereits ein Zugang. Bitte normal anmelden und den Anbieter in den Einstellungen verbinden.',409);const companyId=id();await s.put('company',{...co,id:companyId,email:r.email,status:'pending',createdAt:new Date().toISOString(),reviewNote:''});const user={id:hash(r.email),email:r.email,name,phone,role:'partner',companyId,active:true,verifiedAt:new Date().toISOString(),createdAt:new Date().toISOString(),termsVersion:'2026-09-09'};await s.put('user',user,companyId||'internal');await s.put('identity',{id:r.identityId,provider:r.provider,userId:user.id,...(r.protectedToken?{protectedToken:r.protectedToken,tokenType:r.tokenType}:{}),createdAt:new Date().toISOString()},user.id);if(data.referralCode)await referrals.attribute(s,user,text(data.referralCode,32).toUpperCase());await s.remove('oauth_pending',r.id);return {...await issueSession(s,user),email:r.email};});
    res.setHeader('Set-Cookie',[cookie(pendingName,'',0),result.cookie]);const e=notice({title:'Willkommen bei UNFALLX Connect',copy:'Dein Partnerkonto ist angelegt. Wir prüfen jetzt deinen Betrieb und stimmen die Zusammenarbeit persönlich mit dir ab.',url:requestOrigin()+result.redirect,origin});try{await mail.send(result.email,e.subject,e.text,[],e.html);}catch{console.error('OAuth welcome notice: delivery unavailable');}return {redirect:result.redirect};
   }
   throw new Problem(404,'Nicht gefunden.');
  }
- return {route,config,begin};
+ async function revoke(identity){
+  if(identity.provider!=='apple')return;
+  assert(identity.protectedToken,'Vor der Löschung bitte die Apple-Verknüpfung durch erneute Apple-Anmeldung aktualisieren.',409);
+  const token=vault.open(identity.protectedToken,identity.id);
+  const response=await fetch('https://appleid.apple.com/auth/revoke',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:clientId('apple'),client_secret:await secret('apple'),token,token_type_hint:identity.tokenType||'refresh_token'}),signal:AbortSignal.timeout(10000),redirect:'error'});
+  assert(response.ok,'Apple hat die Trennung noch nicht bestätigt. Bitte später erneut versuchen.',503);
+ }
+ return {route,config,begin,revoke};
 }
 module.exports={createOAuth,verifyIdentity};
