@@ -9,7 +9,7 @@ const providers={
 };
 const keysets=new Map();
 async function verifyIdentity(token,provider,clientId,nonce,keySet){const {jwtVerify,createRemoteJWKSet}=await jose();const p=providers[provider];assert(p,'Unbekannter Anbieter.');if(!keysets.has(provider))keysets.set(provider,createRemoteJWKSet(new URL(p.keys),{timeoutDuration:10000}));const {payload}=await jwtVerify(token,keySet||keysets.get(provider),{issuer:p.issuer,audience:clientId,algorithms:['RS256'],clockTolerance:30,maxTokenAge:'10m',requiredClaims:['exp','iat','sub','nonce']});assert(payload.nonce===nonce&&typeof payload.sub==='string'&&payload.sub.length>0&&payload.sub.length<=255,'Anmeldung konnte nicht bestätigt werden.',401);return payload;}
-function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referrals,requestOrigin=()=>origin,checkWorkspace=()=>{},onVerified=()=>{}}){
+function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referrals,requestOrigin=()=>origin,checkWorkspace=()=>{},onVerified=()=>{},nativeComplete=null}){
  const local=env.NODE_ENV==='test';const bindingName=local?'ux_oauth':'__Host-ux_oauth',pendingName=local?'ux_onboarding':'__Host-ux_onboarding';
  const cookie=(name,value,seconds=600,cross=false)=>`${name}=${value}; Path=/; HttpOnly; SameSite=${cross&&!local?'None':'Lax'}; Max-Age=${seconds}${local?'':'; Secure'}`;
  const readCookie=(req,name)=>(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(name+'='))?.slice(name.length+1)||'';
@@ -21,10 +21,12 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
  async function secret(p){if(p==='google')return env.GOOGLE_CLIENT_SECRET;const {SignJWT,importPKCS8}=await jose();const key=await importPKCS8(env.APPLE_PRIVATE_KEY.replace(/\\n/g,'\n'),'ES256');return new SignJWT({}).setProtectedHeader({alg:'ES256',kid:env.APPLE_KEY_ID}).setIssuer(env.APPLE_TEAM_ID).setSubject(env.APPLE_CLIENT_ID).setAudience('https://appleid.apple.com').setIssuedAt().setExpirationTime('5m').sign(key);}
  async function pending(req,s){const value=readCookie(req,pendingName);assert(/^[a-f0-9]{64}$/.test(value),'Bitte den Anbieter-Login erneut starten.',401);const r=await s.get('oauth_pending',hash(value));assert(r&&r.expires>Date.now()&&r.origin===requestOrigin(),'Bitte den Anbieter-Login erneut starten.',401);return r;}
  async function finish(req,res,url,p){
+  let nativeRequest=null;
   try{
    assert(configured(p),'Anbieter nicht eingerichtet.',503);let data;if(req.method==='POST'){assert((req.headers['content-type']||'').startsWith('application/x-www-form-urlencoded'),'Ungültige Rückmeldung.',415);data=Object.fromEntries(new URLSearchParams((await body(req,16000,true)).toString()));}else data=Object.fromEntries(url.searchParams);
    assert(/^[a-f0-9]{64}$/.test(data.state||''),'Ungültiger Anmeldevorgang.',401);
    const state=await tx(async s=>{const r=await s.get('oauth_state',hash(data.state));assert(r&&r.expires>Date.now()&&r.provider===p&&r.origin===requestOrigin()&&r.binding===hash(readCookie(req,bindingName)),'Dieser Login gehört nicht zu diesem Browser oder ist abgelaufen.',401);await s.remove('oauth_state',r.id);return r;});
+   nativeRequest=state.nativeRequest||null;
    res.setHeader('Set-Cookie',cookie(bindingName,'',0,true));assert(!data.error&&typeof data.code==='string'&&data.code.length<=4096,'Anmeldung abgebrochen.',401);
    const form={client_id:clientId(p),client_secret:await secret(p),code:data.code,grant_type:'authorization_code',redirect_uri:callback(p)};if(p==='google')form.code_verifier=state.verifier;
    const response=await fetch(providers[p].token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(form),signal:AbortSignal.timeout(10000),redirect:'error'});assert(response.ok,'Anbieter konnte den Login nicht bestätigen.',401);const result=await response.json();assert(typeof result.id_token==='string','Anbieter konnte den Login nicht bestätigen.',401);const identity=await verifyIdentity(result.id_token,p,clientId(p),state.nonce);
@@ -38,17 +40,19 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
     checkWorkspace({role:'partner'});const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,email:address,name:text(identity.name||'',120),csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};
    });
    onVerified(p);
+   if(nativeRequest&&nativeComplete)return await nativeComplete(req,res,nativeRequest,outcome);
    if(outcome.cookie)res.setHeader('Set-Cookie',[cookie(bindingName,'',0,true),outcome.cookie]);if(outcome.pending)res.setHeader('Set-Cookie',[cookie(bindingName,'',0,true),cookie(pendingName,outcome.pending)]);return redirect(res,outcome.redirect);
-  }catch(e){console.error('OAuth callback failed:',p,e.code||e.status||'provider');return redirect(res,'/login?oauth=failed');}
+  }catch(e){console.error('OAuth callback failed:',p,e.code||e.status||'provider');if(nativeRequest&&nativeComplete)return nativeComplete(req,res,nativeRequest,{error:'provider_failed'});return redirect(res,'/login?oauth=failed');}
+ }
+ async function begin(req,res,data,nativeRequest=null){
+const p=text(data.provider,20,true);assert(providers[p]&&configured(p),'Diese Anmeldemethode wird noch eingerichtet.',503);const state=random(),binding=random(),nonce=random(),verifier=random();let actor=null;
+   await tx(async s=>{await rate(s,'oauth-start:'+ip(req),20);if(data.link===true){actor=await auth(req,s);assert(Date.now()-Date.parse(actor.session.createdAt)<15*60000,'Bitte für das Verknüpfen erneut anmelden (höchstens 15 Minuten).',401);}await s.put('oauth_state',{id:hash(state),origin:requestOrigin(),binding:hash(binding),nonce,verifier,provider:p,nativeRequest,userId:actor?.user.id||null,sessionId:actor?.session.id||null,expires:Date.now()+10*60000});});
+   res.setHeader('Set-Cookie',cookie(bindingName,binding,600,true));const destination=new URL(providers[p].auth);Object.entries({client_id:clientId(p),redirect_uri:callback(p),response_type:'code',scope:p==='google'?'openid email profile':'email',state,nonce}).forEach(([k,v])=>destination.searchParams.set(k,v));if(p==='google'){destination.searchParams.set('code_challenge',Buffer.from(hash(verifier),'hex').toString('base64url'));destination.searchParams.set('code_challenge_method','S256');destination.searchParams.set('prompt','select_account');}else destination.searchParams.set('response_mode','form_post');return {redirect:destination.href};
  }
  async function route(path,req,res,url){
   const cb=path.match(/^\/oauth\/(google|apple)\/callback$/);if(cb)return finish(req,res,url,cb[1]);
   if(path==='/oauth/providers'&&req.method==='GET')return {providers:config()};
-  if(path==='/oauth/start'&&req.method==='POST'){
-   const data=await body(req);const p=text(data.provider,20,true);assert(providers[p]&&configured(p),'Diese Anmeldemethode wird noch eingerichtet.',503);const state=random(),binding=random(),nonce=random(),verifier=random();let actor=null;
-   await tx(async s=>{await rate(s,'oauth-start:'+ip(req),20);if(data.link===true){actor=await auth(req,s);assert(Date.now()-Date.parse(actor.session.createdAt)<15*60000,'Bitte für das Verknüpfen erneut anmelden (höchstens 15 Minuten).',401);}await s.put('oauth_state',{id:hash(state),origin:requestOrigin(),binding:hash(binding),nonce,verifier,provider:p,userId:actor?.user.id||null,sessionId:actor?.session.id||null,expires:Date.now()+10*60000});});
-   res.setHeader('Set-Cookie',cookie(bindingName,binding,600,true));const destination=new URL(providers[p].auth);Object.entries({client_id:clientId(p),redirect_uri:callback(p),response_type:'code',scope:p==='google'?'openid email profile':'email',state,nonce}).forEach(([k,v])=>destination.searchParams.set(k,v));if(p==='google'){destination.searchParams.set('code_challenge',Buffer.from(hash(verifier),'hex').toString('base64url'));destination.searchParams.set('code_challenge_method','S256');destination.searchParams.set('prompt','select_account');}else destination.searchParams.set('response_mode','form_post');return {redirect:destination.href};
-  }
+  if(path==='/oauth/start'&&req.method==='POST')return begin(req,res,await body(req));
   if(path==='/oauth/profile'&&req.method==='GET')return tx(async s=>{const r=await pending(req,s);return {email:r.email,name:r.name,provider:r.provider,csrf:r.csrf};});
   if(path==='/oauth/complete'&&req.method==='POST'){
    checkWorkspace({role:'partner'});const data=await body(req);assert(data.privacy===true&&data.terms===true,'Bitte Datenschutz und Nutzungsbedingungen bestätigen.');assert(data.typeOfAccount==='partner','Neue Zugänge sind ausschließlich für Partnerbetriebe vorgesehen.');const co=companyData(data),name=co.contact,phone=co.phone;
@@ -57,6 +61,6 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
   }
   throw new Problem(404,'Nicht gefunden.');
  }
- return {route,config};
+ return {route,config,begin};
 }
 module.exports={createOAuth,verifyIdentity};
