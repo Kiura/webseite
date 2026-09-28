@@ -8,6 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 require('./portal/hostinger-env').loadHostingerGoogleEnv(__dirname);
+require('./portal/hostinger-env').loadHostingerAppleEnv(__dirname);
 require('./portal/hostinger-env').loadHostingerStorageEnv(__dirname);
 require('./portal/hostinger-env').loadHostingerAutoixpertEnv(__dirname);
 const anfrage = require('./anfrage');
