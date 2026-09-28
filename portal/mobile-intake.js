@@ -81,6 +81,7 @@ function createMobileIntake({tx,body,rate,ip,env,blobs,authorize,onSubmitted=asy
  async function route(path,req){
   if(path==='/mobile/config'&&req.method==='GET')return {version:2,enabled:isEnabled(),authentication:'approved-partner-session'};
   assert(isEnabled(),'Die iPhone-Schnittstelle ist vorübergehend deaktiviert.',501);const a=await actor(req);
+  const extra=await require('./mobile-tools').createMobileTools({tx,body,rate}).route(path,req,a);if(extra)return extra;
   if(path==='/mobile/overview'&&req.method==='GET')return tx(async s=>overview(await require('./presentation').summarizeCases(s,(await s.list('case',a.company.id)).filter(c=>c.companyId===a.company.id),a.user)));
   assert(req.method==='POST','Methode nicht erlaubt.',405);
   if(path==='/mobile/cases')return save(req,a);const m=/^\/mobile\/cases\/([a-f0-9-]{36})\/(files|finish)$/.exec(path);assert(m&&uuid.test(m[1]),'Nicht gefunden.',404);return m[2]==='files'?guardedUpload(req,m[1],a):finish(req,m[1],a);

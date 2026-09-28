@@ -13,6 +13,7 @@ function createOperations({tx,db,env,mail,storage,rate,oauth}){
  async function observe(id,kind,fn){let result;try{result=await fn();}catch(e){if(!e.status||e.status>=500)void record(id,false,kind,id==='smtp'?(classifyDeliveryError(e)==='definite'?'Mailserver hat den Versand nicht angenommen.':'SMTP-Annahme unklar; vor Wiederholung prüfen.'):'Verbindung oder Dateiintegrität nicht bestätigt.');throw e;}void record(id,true,kind);return result;}
  async function overview(){
   await readiness();
+  const mobileDiagnostics=await tx(async s=>{await require('./mobile-tools').pruneDiagnostics(s);return (await s.list('mobile_diagnostic')).sort((a,b)=>b.day.localeCompare(a.day));});
   const saved=await tx(async s=>({statuses:await s.list('system_status'),notices:await s.list('notification'),backups:await s.get('system','backup-plan'),contacts:await s.list('contact_request'),exports:await s.list('autoixpert_export')}));
   const completed=saved.exports.filter(j=>j.state==='complete').sort((a,b)=>(b.updatedAt||'').localeCompare(a.updatedAt||''))[0];if(completed&&!saved.statuses.some(r=>r.id==='autoixpert'))saved.statuses.push({id:'autoixpert',ok:true,kind:'export',checkedAt:completed.updatedAt,lastSuccessAt:completed.updatedAt});
   const sf=storageConfig(env),providers=oauth.config();
@@ -27,7 +28,7 @@ function createOperations({tx,db,env,mail,storage,rate,oauth}){
   ];
   const services=list.map(([id,name,configured,nextStep,test])=>{const prior=saved.statuses.find(x=>x.id===id)||{},latest=recent.get(id)||prior;return {id,name,configured:!!configured,test,checkedAt:latest.checkedAt||null,lastSuccessAt:latest.ok?latest.checkedAt:prior.lastSuccessAt||null,lastFailureAt:!latest.ok&&latest.checkedAt?latest.checkedAt:prior.lastFailureAt||null,ok:typeof latest.ok==='boolean'?latest.ok:null,kind:latest.kind||null,error:latest.ok?null:latest.detail||null,nextStep};});
   const queue={pending:0,sending:0,uncertain:0,failed:0,sent:0};for(const n of saved.notices)if(Object.hasOwn(queue,n.state))queue[n.state]++;
-  return {services,queue,storage:await storage.overview(),openContacts:saved.contacts.filter(c=>c.state!=='done').length,backups:saved.backups||null,callbacks:['https://app.unfallx.com/api/portal/oauth/google/callback','https://admin.unfallx.com/api/portal/oauth/google/callback'],responsibility:'UNFALLX Administration · Hosting und Dienstkonten im Firmenzugang verwalten.'};
+  return {mobileDiagnostics,services,queue,storage:await storage.overview(),openContacts:saved.contacts.filter(c=>c.state!=='done').length,backups:saved.backups||null,callbacks:['https://app.unfallx.com/api/portal/oauth/google/callback','https://admin.unfallx.com/api/portal/oauth/google/callback'],responsibility:'UNFALLX Administration · Hosting und Dienstkonten im Firmenzugang verwalten.'};
  }
  async function check(user,service){D.assert(user.role==='admin','Nur die Administration darf Verbindungen prüfen.',403);D.assert(['mysql','s3','smtp'].includes(service),'Unbekannte Prüfung.');await tx(s=>rate(s,'system-check:'+user.id+':'+service,6));
   if(service==='mysql'){const ok=await readiness();if(ok)await record('mysql',true,'query');return {ok,message:ok?'Datenbankabfrage erfolgreich.':'Datenbank aktuell nicht erreichbar.'};}
