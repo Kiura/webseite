@@ -5,9 +5,9 @@ const root=process.env.UNFALLX_PORTAL_ROOT||path.resolve(__dirname,'..');
 const {createPortal}=require(path.join(root,'portal/app')),{createStore}=require(path.join(root,'portal/store'));
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
 const fields={'claimant.first':'Alex','claimant.last':'Beispiel','claimant.street':'Musterstraße 12','claimant.zip':'10115','claimant.city':'Berlin',plate:'B UX 123'};
-async function fixture(){
+async function fixture(extra={}){
  const store=await createStore({NODE_ENV:'test',PORTAL_LOCAL_DB:':memory:'});
- const portal=createPortal({store,env:{NODE_ENV:'production',PORTAL_MOBILE_INTAKE_ENABLED:'true'},mail:{ready:false,send:async()=>{throw new Error('No mail in tests');}}});await portal.ready();
+ const portal=createPortal({store,env:{NODE_ENV:'production',PORTAL_MOBILE_INTAKE_ENABLED:'true'},mail:{ready:false,send:async()=>{throw new Error('No mail in tests');}},...extra});await portal.ready();
  async function call(host,route,data,headers={}){
   const bytes=data===undefined?null:Buffer.from(JSON.stringify(data));const req=Readable.from(bytes?[bytes]:[]);
   Object.assign(req,{method:bytes?'POST':'GET',url:'/api/portal'+route,headers:{host,'content-type':'application/json',...headers},socket:{remoteAddress:'127.0.0.1'}});
@@ -98,5 +98,19 @@ test('real admin finance calculation flows into native 50% commission and paymen
   v=await view();assert.equal(v.totals.payableCents,5000);assert.equal(v.totals.expectedCents,5000);
   assert.equal((await action({action:'payout',confirmed:true,date:'2026-09-11',reference:'Testüberweisung'})).status,200);
   v=await view();assert.equal(v.totals.expectedCents,0);assert.equal(v.totals.payableCents,0);assert.equal(v.totals.paidCents,5000);
+ }finally{await portal.close();}
+});
+
+ test('production push routes enforce host, origin, CSRF, MFA and approval',async()=>{
+ const {store,portal,call,headers}=await fixture({pushTransport:{ready:true,send:async()=>({status:200})}});try{
+  const data={installationId:crypto.randomUUID(),enabled:true,token:'aa'.repeat(32),environment:'production',preferences:{requests:true,accepted:true,commission:true}};
+  assert.equal((await call('app.unfallx.com','/mobile/push/config')).status,401);
+  assert.equal((await call('app.unfallx.com','/mobile/push/config',undefined,headers())).json.enabled,true);
+  assert.equal((await call('app.unfallx.com','/mobile/push/device',data,headers())).status,200);
+  assert.equal((await call('admin.unfallx.com','/mobile/push/device',data,headers('admin'))).status,403);
+  for(const role of ['pending','mfa'])assert.equal((await call('app.unfallx.com','/mobile/push/device',data,headers(role))).status,role==='mfa'?401:403);
+  assert.equal((await call('app.unfallx.com','/mobile/push/device',data,{...headers(),'x-csrf-token':'wrong'})).status,403);
+  assert.equal((await call('app.unfallx.com','/mobile/push/device',data,{...headers(),origin:'https://evil.test'})).status,403);
+  assert.equal((await store.transaction(s=>s.list('push_device'))).length,1);
  }finally{await portal.close();}
 });

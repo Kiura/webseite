@@ -16,14 +16,15 @@ test('Native Google login binds PKCE, browser, origin and one-use code, and reta
  const h=await harness({GOOGLE_CLIENT_ID:'native-client',GOOGLE_CLIENT_SECRET:'test-only'}),originalFetch=global.fetch;let nextJWT='';
  global.fetch=async(input,options)=>{const url=String(input);if(url==='https://www.googleapis.com/oauth2/v3/certs')return new Response(JSON.stringify({keys:[key]}),{headers:{'Content-Type':'application/json'}});if(url==='https://oauth2.googleapis.com/token')return new Response(JSON.stringify({id_token:nextJWT}),{headers:{'Content-Type':'application/json'}});return originalFetch(input,options);};
  const proof=()=>({verifier:crypto.randomBytes(32).toString('base64url'),state:crypto.randomBytes(32).toString('base64url')});
- const begin=async(p=proof(),extra={})=>{const r=await h.call('/mobile/auth/start',{provider:'google',platform:'ios',challenge:base64url(p.verifier),state:p.state,...extra});return {...r,p};};
- async function flow(subject,address,{p=proof(),cancel=false,wrongBrowser=false}={}) {
-  const start=await begin(p);assert.equal(start.status,200,JSON.stringify(start));const entry=new URL(start.json.authorizationURL);
+ const begin=async(p=proof(),extra={},actor={})=>{const r=await h.call('/mobile/auth/start',{provider:'google',platform:'ios',challenge:base64url(p.verifier),state:p.state,...extra},actor);return {...r,p};};
+ async function flow(subject,address,{p=proof(),cancel=false,wrongBrowser=false,extra={},actor={},beforeCallback=null}={}) {
+  const start=await begin(p,extra,actor);assert.equal(start.status,200,JSON.stringify(start));const entry=new URL(start.json.authorizationURL);
   const opened=await h.call(entry.pathname.replace('/api/portal','')+entry.search);assert.equal(opened.status,303);const target=new URL(opened.location);
   assert.equal((await h.call(entry.pathname.replace('/api/portal','')+entry.search)).status,401,'browser ticket is one use');
   nextJWT=await new SignJWT({sub:subject,email:address,email_verified:true,nonce:target.searchParams.get('nonce')}).setProtectedHeader({alg:'RS256',kid:key.kid}).setIssuer('https://accounts.google.com').setAudience('native-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);
   const route='/oauth/google/callback?state='+target.searchParams.get('state')+(cancel?'&error=access_denied':'&code=test-only');
   if(wrongBrowser)assert.equal((await h.call(route)).location,'/login?oauth=failed');
+  if(beforeCallback)await beforeCallback();
   const result=await h.call(route,undefined,{cookie:opened.cookie.split(';')[0]});assert.equal(result.status,303,JSON.stringify(result));
   const callback=new URL(result.location);assert.equal(callback.protocol,'unfallxpartner:');assert.equal(callback.host,'oauth');assert.equal(callback.searchParams.get('state'),p.state);assert.equal([...callback.searchParams].length,2);
   assert.doesNotMatch(result.cookie||'',/(?:^|[,;\s])ux_session=/,'browser never receives the app session');
@@ -44,6 +45,20 @@ test('Native Google login binds PKCE, browser, origin and one-use code, and reta
   const existing=await flow('unlinked',partner.user.email);const link=await h.call('/mobile/auth/exchange',existing);assert.equal(link.status,401);assert.match(link.json.error,/verbinden/);
   const newcomer=await flow('new-native','new-native@example.com');const register=await h.call('/mobile/auth/exchange',newcomer);assert.equal(register.status,401);assert.match(register.json.error,/registrieren/);assert.equal((await h.store.transaction(s=>s.list('oauth_pending'))).length,0);
   const canceled=await flow('native-subject',partner.user.email,{cancel:true});assert.equal((await h.call('/mobile/auth/exchange',canceled)).status,401);
+  const modern=await h.call('/mobile/auth/exchange',await flow('new-modern','new-modern@example.com',{extra:{flowVersion:2}}));assert.equal(modern.status,200);assert.equal(modern.json.nextAction,'register');assert.equal(modern.json.ok,false);
+  const linkHint=await h.call('/mobile/auth/exchange',await flow('not-linked',partner.user.email,{extra:{flowVersion:2}}));assert.equal(linkHint.json.nextAction,'link');
+  assert.equal((await begin(proof(),{action:'link',flowVersion:2})).status,401);
+  assert.equal((await begin(proof(),{action:'link',flowVersion:2},{...partner,csrf:'wrong'})).status,403);
+  const linkedGrant=await flow('new-linked-provider','different-provider@example.com',{extra:{action:'link',flowVersion:2},actor:partner});
+  const linked=await h.call('/mobile/auth/exchange',linkedGrant,partner);assert.equal(linked.status,200);assert.equal(linked.json.linked,true);assert.equal(linked.cookie,null);
+  assert.equal((await h.store.transaction(s=>s.get('identity',D.hash('google:new-linked-provider')))).userId,partner.user.id);
+  const linkedLogin=await h.actor(await h.call('/mobile/auth/exchange',await flow('new-linked-provider','different-provider@example.com')));assert.equal(linkedLogin.user.id,partner.user.id);
+  const another=await h.register('other-partner@example.com');
+  const conflict=await h.call('/mobile/auth/exchange',await flow('native-subject',partner.user.email,{extra:{action:'link',flowVersion:2},actor:another}),another);assert.equal(conflict.json.ok,false);assert.equal((await h.store.transaction(s=>s.get('identity',D.hash('google:native-subject')))).userId,partner.user.id);
+  const revokedLink=await flow('revoked-link','revoked@example.com',{extra:{action:'link',flowVersion:2},actor:another,beforeCallback:async()=>h.store.transaction(s=>s.remove('session',D.hash(another.cookie.split('=')[1])))});
+  assert.equal((await h.call('/mobile/auth/exchange',revokedLink,another)).status,401);assert.equal(await h.store.transaction(s=>s.get('identity',D.hash('google:revoked-link'))),null);
+  await h.store.transaction(async s=>{const id=D.hash(partner.cookie.split('=')[1]),row=await s.get('session',id);row.createdAt=new Date(Date.now()-16*60000).toISOString();await s.put('session',row,partner.user.id);});
+  assert.equal((await begin(proof(),{action:'link',flowVersion:2},partner)).status,401);
   const expired=await flow('native-subject',partner.user.email);await h.store.transaction(async s=>{const row=await s.get('native_grant',D.hash(expired.code));row.expires=Date.now()-1;await s.put('native_grant',row);});assert.equal((await h.call('/mobile/auth/exchange',expired)).status,401);
   await h.store.transaction(s=>s.put('security',{id:partner.user.id,mfaEnabled:true,epoch:1,phone:'+4917612345678',verifiedAt:new Date().toISOString(),recovery:[]},partner.user.id));
   const guarded=await h.call('/mobile/auth/exchange',await flow('native-subject',partner.user.email));assert.equal(guarded.status,200);assert.equal(guarded.json.mfaRequired,true);

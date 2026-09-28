@@ -143,3 +143,14 @@ test('Imported Apple token encryption survives a process restart without key rep
   assert.equal(tokenVault(restarted).open(sealed, 'fixture-identity'), 'fixture-refresh-token');
   assert.throws(() => tokenVault(restarted).open(sealed, 'different-identity'));
 });
+
+test('APNs private config loads only a complete matching push key for the iPhone topic',()=>{
+ const {loadHostingerPushEnv}=require('../portal/hostinger-env');
+ const values={APNS_TEAM_ID:'TEAM123456',APNS_KEY_ID:'KEY1234567',APNS_PRIVATE_KEY:'test-only',APNS_TOPIC:'de.schadenakte.ios'},text=Object.entries({...values,APPLE_PRIVATE_KEY:'never-replace',NODE_OPTIONS:'never-load'}).map(([k,v])=>k+'='+v).join('\n'),dir=root+'/current/nodejs';
+ const env={APPLE_PRIVATE_KEY:'existing'};assert.equal(loadHostingerPushEnv(dir,env,()=>text),true);assert.deepEqual(env,{...values,APPLE_PRIVATE_KEY:'existing'});
+ for(const omit of Object.keys(values)){const incomplete=Object.entries(values).filter(([k])=>k!==omit).map(([k,v])=>k+'='+v).join('\n');assert.equal(loadHostingerPushEnv(dir,{},()=>incomplete),false);}
+ assert.equal(loadHostingerPushEnv(dir,{},()=>text.replace('de.schadenakte.ios','wrong')),false);
+ const conflict={APNS_KEY_ID:'OTHERKEY00'};assert.equal(loadHostingerPushEnv(dir,conflict,()=>text),false);assert.deepEqual(conflict,{APNS_KEY_ID:'OTHERKEY00'});
+ for(const path of ['/tmp/app',root+'/current/../nodejs'])assert.equal(loadHostingerPushEnv(path,{},()=>assert.fail('Unexpected read')),false);
+ assert.equal(loadHostingerPushEnv(dir,{NODE_ENV:'test'},()=>assert.fail('Unexpected read')),false);
+});

@@ -1,14 +1,14 @@
 'use strict';
 const D=require('./domain');const {classifyDeliveryError}=require('./mail');const {notice}=require('./brand-mail');
 const {assert,hash,id,random}=D;
-function createNotifications({tx,mail,origin,rate,tracking,recipientOrigin=()=>origin}){
+function createNotifications({tx,mail,origin,rate,tracking,mobilePush=null,recipientOrigin=()=>origin}){
  let flushing=false;
  async function queue(s,{key,to,title,copy,url,userId=null,caseId=null,subscriptionId=null,companyId=null,companyReview=null,contactId=null,cta='App öffnen',secondary=null}){const rid=hash(key+':'+to);if(await s.get('notification',rid))return;const content=notice({title,copy,url,origin,cta,secondary});await s.put('notification',{id:rid,to,userId,caseId,subscriptionId,companyId,companyReview,contactId,...content,state:'pending',attempts:0,nextAttempt:Date.now(),createdAt:new Date().toISOString()},userId||'external');}
  async function customerInvite(s,c){if(!c.intake.notifyCustomer||!c.intake.customerEmail)return;const address=c.intake.customerEmail,key=hash(c.id+':'+address);if(await s.get('case_subscription',key))return;
   try{await rate(s,'customer-invite:'+address,4,86400000);}catch(e){if(e.status===429)return;throw e;}const token=random();await s.put('case_subscription',{id:key,caseId:c.id,email:address,verifiedAt:null,active:false,createdAt:new Date().toISOString()},c.id);await s.put('notification_token',{id:hash(token),purpose:'subscribe',subscriptionId:key,expires:Date.now()+7*86400000},key);
   await queue(s,{key:'customer-invite:'+key,to:address,cta:'E-Mail bestätigen',title:'Fallbenachrichtigungen bestätigen',copy:'Ein Auftraggeber oder UNFALLX hat diese Adresse für Statusmeldungen zu einer Schadenanfrage bei UNFALLX angegeben. Bitte bestätige nur, wenn du diese Anfrage kennst. Danach erhältst du Mitteilungen zur Bearbeitung. Ohne Bestätigung versenden wir keine Fallmeldungen. Der Link gilt sieben Tage. Wenn dir die Anfrage unbekannt ist, ignoriere diese Nachricht.',url:origin+'/benachrichtigungen#token='+token});
  }
- async function event(s,user,c,event){if(event.internal||['draft','recording','ready_to_submit'].includes(c.status))return;
+ async function event(s,user,c,event){if(mobilePush)await mobilePush.event(s,user,c,event);if(event.internal||['draft','recording','ready_to_submit'].includes(c.status))return;
   const relevant=['Fall eingereicht','Kundenaufnahme abgeschlossen'].includes(event.action)||event.action.startsWith('Status: ')||['Nachricht','Unterlage entfernt','Unterlage wiederhergestellt','Vergütung zur Bestätigung hinterlegt','Vergütung vom Partner bestätigt','Partnerrechnung freigegeben','Auszahlung erfasst','Falldaten aktualisiert','Unterlagen ergänzt','Unterlagen angefordert','Rückfrage beantwortet','Rückfrage erledigt','Rückfrage erneut geöffnet','Gutachten an Kanzlei versandt'].includes(event.action);if(!relevant)return;
   await customerInvite(s,c);
   let users=(await s.list('user')).filter(u=>u.active&&u.verifiedAt&&(u.role==='partner'&&u.companyId===c.companyId||u.id===c.assignee||u.role==='admin'&&(['Fall eingereicht','Kundenaufnahme abgeschlossen','Rückfrage beantwortet','Unterlagen ergänzt'].includes(event.action)||user.role==='partner'&&event.action==='Nachricht')));

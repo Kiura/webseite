@@ -39,6 +39,8 @@ function createAccountDeletion({tx,rate,oauth,notifications}){
    for(const row of await s.list('oauth_pending'))if(row.email===u.email)await s.remove('oauth_pending',row.id);
    for(const row of await s.list('oauth_state'))if(row.userId===u.id)await s.remove('oauth_state',row.id);
    for(const row of await s.list('native_auth'))if(sessionIds.has(row.sessionId)){for(const grant of await s.list('native_grant'))if(grant.requestId===row.id)await s.remove('native_grant',grant.id);await s.remove('native_auth',row.id);}
+   for(const row of await s.list('push_device',u.id))await s.remove('push_device',row.id);
+   for(const row of await s.list('push_notification',u.id))await s.remove('push_notification',row.id);
    for(const row of await s.list('notification'))if(row.userId===u.id||row.to===u.email)await s.remove('notification',row.id);
    // Email-derived login IDs are reusable. Retained financial records must not
    // become accessible to a newly registered account with the same email.

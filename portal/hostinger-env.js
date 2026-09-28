@@ -77,3 +77,15 @@ function loadHostingerAppleEnv(appDir, env = process.env, read = fs.readFileSync
 }
 
 module.exports = {loadHostingerGoogleEnv,loadHostingerStorageEnv,loadHostingerAutoixpertEnv,loadHostingerAppleEnv};
+
+function loadHostingerPushEnv(appDir, env = process.env, read = fs.readFileSync) {
+ const keys=['APNS_TEAM_ID','APNS_KEY_ID','APNS_PRIVATE_KEY','APNS_TOPIC'];
+ if(env.NODE_ENV==='test'||keys.every(k=>env[k]))return false;
+ const deployment=String(appDir).match(/^(\/home\/u\d+\/domains\/unfallx\.com\/hbuilds)\/(?:current|versions\/[a-zA-Z0-9-]+)\/nodejs$/);
+ if(!deployment)return false;
+ try {const values=parseEnv(read(deployment[1]+'/config/.env','utf8'));
+  if(!keys.every(k=>values[k])||values.APNS_TOPIC!=='de.schadenakte.ios'||keys.some(k=>env[k]&&env[k]!==values[k]))return false;
+  for(const key of keys)if(!env[key])env[key]=values[key];return true;
+ }catch{return false;}
+}
+module.exports.loadHostingerPushEnv=loadHostingerPushEnv;
