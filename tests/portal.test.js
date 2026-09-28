@@ -74,7 +74,28 @@ test('Real HTTP, durable database, tenant boundaries and full case/payment workf
  await action(admin,{action:'finance',invoiceNumber:'UX-TEST-1',invoiceNet:'1000',invoiceGross:'1190',partnerNet:'400',agreement:'Individuelle Testvereinbarung'});await action(p1,{action:'accept_terms'});await action(admin,{action:'payment',amount:'600',date:'2026-09-09',reference:'Teilzahlung 1'});
  assert.equal((await upload(p1,'partner_invoice',pdf,'application/pdf','rechnung.pdf')).status,400);checks++;
  await action(admin,{action:'payout',confirmed:true,date:'2026-09-09',reference:'verfrüht'},400);await action(admin,{action:'payment',amount:'591',date:'2026-09-09',reference:'zu viel'},400);await action(admin,{action:'payment',amount:'590',date:'2026-09-09',reference:'Restzahlung'});
- const partnerInvoice=await upload(p1,'partner_invoice',pdf,'application/pdf','rechnung.pdf');assert.equal(partnerInvoice.status,200);assert.equal((await fetch(base+'/api/portal/files/'+partnerInvoice.json.file.id,{headers:{Cookie:expert.cookie}})).status,404);checks++;await action(admin,{action:'finance',invoiceNumber:'X'},400);await action(admin,{action:'approve_invoice',confirmed:true});await action(admin,{action:'payout',confirmed:true,date:'2026-09-09',reference:'Bank-Test'});await action(admin,{action:'payout',confirmed:true,date:'2026-09-09',reference:'doppelt'},400);await action(admin,{action:'status',status:'closed'});
+ const partnerInvoice=await upload(p1,'partner_invoice',pdf,'application/pdf','rechnung.pdf');assert.equal(partnerInvoice.status,200);assert.equal((await fetch(base+'/api/portal/files/'+partnerInvoice.json.file.id,{headers:{Cookie:expert.cookie}})).status,404);checks++;await action(admin,{action:'finance',invoiceNumber:'X'},400);await action(admin,{action:'approve_invoice',confirmed:true});
+ await t.test('payout planning is admin-only, versioned and never marks a bank transfer',async()=>{
+  await action(p1,{action:'payout_plan',date:'2099-01-02',confirmed:true},403);
+  await action(expert,{action:'payout_plan',date:'2099-01-02',confirmed:true},403);
+  await action(admin,{action:'payout_plan',date:'2020-01-01',confirmed:true},400);
+  await action(admin,{action:'payout_plan',date:'2099-01-02',confirmed:false},400);
+  await action(admin,{action:'payout_plan',date:'2099-01-02',confirmed:true});
+  const own=(await call('/mobile/payout/'+cid,undefined,p1)).json;assert.equal(own.scheduledAt,'2099-01-02');assert.equal(own.paidOutAt,null);
+  assert.equal((await upload(admin,'payout_receipt',pdf,'application/pdf','beleg.pdf')).status,400);
+  await action(admin,{action:'payout_plan',date:'',confirmed:true});assert.equal((await call('/mobile/payout/'+cid,undefined,p1)).json.scheduledAt,null);
+ });
+ await action(admin,{action:'payout',confirmed:true,date:'2026-09-09',reference:'Bank-Test'});await action(admin,{action:'payout',confirmed:true,date:'2026-09-09',reference:'doppelt'},400);await action(admin,{action:'status',status:'closed'});
+ await t.test('paid receipt is PDF-only, admin-uploaded and visible only in the owning partner case',async()=>{
+  assert.equal((await upload(p1,'payout_receipt',pdf,'application/pdf','beleg.pdf')).status,403);
+  assert.equal((await upload(expert,'payout_receipt',pdf,'application/pdf','beleg.pdf')).status,403);
+  assert.equal((await upload(admin,'payout_receipt',pic,'image/jpeg','beleg.jpg')).status,400);
+  const result=await upload(admin,'payout_receipt',pdf,'application/pdf','beleg.pdf');assert.equal(result.status,200,JSON.stringify(result.json));
+  const id=result.json.file.id;assert.equal((await call('/mobile/payout/'+cid,undefined,p1)).json.receiptFileID,id);
+  for(const actor of [p2,expert])assert.equal((await fetch(base+'/api/portal/files/'+id,{headers:{Cookie:actor.cookie}})).status,404);
+  const r=await fetch(base+'/api/portal/files/'+id,{headers:{Cookie:p1.cookie}});assert.equal(r.status,200);assert.deepEqual(Buffer.from(await r.arrayBuffer()),pdf);
+ });
+
  const visible=(await call('/cases/'+cid,undefined,p1)).json;assert.equal(visible.case.finance.paymentStatus,'paid_out');assert.equal(visible.case.finance.invoiceGross,undefined);assert.equal(visible.case.internalNote,undefined);assert.equal(visible.events.some(e=>e.internal),false);checks+=4;
  await portal.close();portal=createPortal({env,mail});await portal.ready();assert.equal((await call('/cases/'+cid,undefined,p1)).json.case.status,'closed');const preserved=await fetch(base+'/api/portal/files/'+photo.json.file.id,{headers:{Cookie:p1.cookie}});assert.deepEqual(Buffer.from(await preserved.arrayBuffer()),pic);checks+=2;
  await call('/admin/company',{id:p1.company.id,status:'suspended'},admin);assert.equal((await call('/cases/'+cid,undefined,p1)).status,403);await call('/logout',{},admin);assert.equal((await call('/me',undefined,admin)).status,401);checks+=2;

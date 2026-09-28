@@ -39,6 +39,8 @@ async function apply(s, user, c, data, audit) {
   const file = await s.get('file', D.text(data.fileId, 128, true));
   D.assert(file && file.caseId === c.id && fileVisible({...file, deletedAt:null}, c, user), 'Datei nicht gefunden.', 404);
   if (user.role === 'partner') D.assert((await s.get('company', user.companyId))?.status === 'approved', 'Der Betrieb ist nicht freigeschaltet.', 403);
+  D.assert(!(await s.list('file',c.id)).some(f=>!f.deletedAt&&f.sourceFileId===file.id),'Das Original gehört zu einer markierten Kopie und bleibt erhalten.',403);
+  D.assert(!c.mobile?.customerHandoff || !['active','completed'].includes(c.mobile.customerHandoff.state),'Bitte zuerst den Kundenzugang in der App abschließen oder sperren.',409);
   const reason = blockedReason(user, c, file, await exportIds(s, c));
   D.assert(!reason, reason, 403);
   const restoring = data.action === 'file_restore';

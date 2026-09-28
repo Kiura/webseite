@@ -11,6 +11,7 @@ function payoutCheck(c){
  const eligible=D.payable(c)&&approved;
  return {caseID:c.id,version:c.version,amountCents:amount?f.partnerNet:null,agreement:agreement?f.agreement:null,
   canConfirm:agreement&&!accepted&&!paid,canUpload:D.payable(c)&&!invoice&&!paid,invoiceFileID:f.partnerInvoiceId||null,
+  scheduledAt:eligible&&!paid?f.payoutScheduledAt||null:null,paidOutAt:f.paidOutAt||null,receiptFileID:paid?f.payoutReceiptId||null:null,
   steps:[
    {id:'agreement',title:accepted?'Vergütung bestätigt':agreement?'Vergütung bitte bestätigen':'Vergütung wird kalkuliert',done:accepted},
    {id:'report',title:report?'Gutachten versandt':'Gutachtenversand offen',done:report},

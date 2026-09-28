@@ -46,3 +46,10 @@ test('The HTML policy fallback leaves API authentication and asset bytes intact'
   const asset=await request(host,'/assets/uploads.js');assert.equal(asset.status,200);assert.deepEqual(asset.bytes,fs.readFileSync(path.join(root,'assets/uploads.js')));assert.equal(Number(asset.headers['content-length']),asset.bytes.length);
  }
 });
+test('Customer document viewer is self-hosted, no-store and cannot expose private templates or dependencies',async()=>{
+ const page=await request('app.unfallx.com','/kundenaufnahme');assert.equal(page.status,200);assert.match(page.headers['cache-control'],/no-store/);assert.equal(page.headers['referrer-policy'],'no-referrer');
+ const policy=policyOf(page.body);assert.match(policy,/worker-src 'self'/);assert(!/unsafe-eval|unsafe-inline/.test(policy));assert.match(page.body,/customer-handoff.js/);assert(!page.body.includes('google-analytics'));
+ for(const asset of ['/assets/customer-pdf/pdf.js','/assets/customer-pdf/pdf.worker.js','/assets/customer-logo.png'])assert.equal((await request('app.unfallx.com',asset)).status,200);
+ for(const asset of ['/portal/order-templates/OrderUNFALLX.pdf','/portal/order-templates/NotoSans.ttf','/assets/customer-pdf/package.json','/assets/customer-pdf/fonts/..%2f..%2fpackage.json'])assert.equal((await request('app.unfallx.com',asset)).status,404);
+ assert.equal((await request('app.unfallx.com','/api/portal/customer/handoff')).status,405);
+});
