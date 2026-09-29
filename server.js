@@ -8,6 +8,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 require('./portal/hostinger-env').loadHostingerGoogleEnv(__dirname);
+require('./portal/hostinger-env').loadHostingerAppleEnv(__dirname);
+require('./portal/hostinger-env').loadHostingerPushEnv(__dirname);
 require('./portal/hostinger-env').loadHostingerStorageEnv(__dirname);
 require('./portal/hostinger-env').loadHostingerAutoixpertEnv(__dirname);
 require('./portal/hostinger-env').loadHostingerZeroaccountEnv(__dirname);
@@ -102,8 +104,8 @@ function versionAssets(html) {
 function renderPage(file, context={}) {
   let html=fs.readFileSync(file,'utf8');
   if(path.basename(file)==='app-hilfe.html'){const role=context.workspace==='admin'?'admin':'partner';html=html.replace('{{helpContent}}',help.render(role)).replace('{{helpTitle}}','Hilfe · '+hosts.workspaces[role].title);}
-  if(context.isApp)html=html.replace(/<!--#include:(?:(?:app|home)-)?header-->/g,'<!--#include:workspace-header-->').replace(/<!--#include:(?:(?:app|home)-)?footer-->/g,'<!--#include:workspace-footer-->').replace(/<body(?![^>]*class=)/,'<body class="connect-public"');
-  if(context.isApp&&!['workspace-login.html','passwort.html','registrieren.html','app-hilfe.html','partner-start.html'].includes(path.basename(file))&&!html.includes('/assets/app-shell.css'))html=html.replace('</head>','<link rel="stylesheet" href="/assets/portal.css"><link rel="stylesheet" href="/assets/app-shell.css"></head>');
+  if(context.isApp&&path.basename(file)!=='kundenaufnahme.html')html=html.replace(/<!--#include:(?:(?:app|home)-)?header-->/g,'<!--#include:workspace-header-->').replace(/<!--#include:(?:(?:app|home)-)?footer-->/g,'<!--#include:workspace-footer-->').replace(/<body(?![^>]*class=)/,'<body class="connect-public"');
+  if(context.isApp&&!['kundenaufnahme.html','workspace-login.html','passwort.html','registrieren.html','app-hilfe.html','partner-start.html'].includes(path.basename(file))&&!html.includes('/assets/app-shell.css'))html=html.replace('</head>','<link rel="stylesheet" href="/assets/portal.css"><link rel="stylesheet" href="/assets/app-shell.css"></head>');
   if(context.isApp)html=html.replace('<meta name="theme-color" content="#11151c">','<meta name="theme-color" content="#ffffff">');
   html=applyPartials(html);
   if(!context.isApp&&html.includes('ux-header'))html=html.replace('</head>','<link rel="stylesheet" href="/assets/navigation.css"><script src="/assets/navigation.js" defer></script></head>');
@@ -112,9 +114,9 @@ function renderPage(file, context={}) {
     const identity=w==='admin'?{tagline:'Eingänge prüfen.<br><span>Gutachten erstellen.</span>',purpose:'Dein interner Arbeitsplatz für Schadenaufnahmen, Rückfragen und die gemeinsame Bearbeitung im UNFALLX-Team.',steps:['Eingänge & Unterlagen prüfen','Gutachten & Rückfragen bearbeiten','Status & Abrechnung verwalten'],access:'Zugang nur für eingeladene Teammitglieder'}:{tagline:'Deine Aufnahme.<br><span>Unser Gutachten.</span>',purpose:'Fotos und Unterlagen übermitteln, Rückfragen klären und den Bearbeitungsstand deiner Fälle im Blick behalten.',steps:['Schaden vor Ort aufnehmen','Fotos & Unterlagen an UNFALLX senden','Gutachten durch UNFALLX erstellen lassen'],access:'Dein geschützter Partnerzugang'};
     html=html.replaceAll('{{workspaceTagline}}',identity.tagline).replaceAll('{{workspacePurpose}}',identity.purpose).replaceAll('{{workspaceAccess}}',identity.access).replaceAll('{{workspaceSteps}}',identity.steps.map((text,index)=>'<li><span>0'+(index+1)+'</span>'+text+'</li>').join(''));
     html=html.replace('<body','<body data-workspace="'+w+'"').replaceAll('{{workspaceTitle}}',title).replaceAll('{{workspaceHeading}}',labels[w][0]).replaceAll('{{workspaceCopy}}',labels[w][1]).replaceAll('{{workspaceEnrollment}}',w==='admin'?'<p class="workspace-enrollment">Interne Zugänge werden durch UNFALLX eingeladen.</p>':'<p class="workspace-enrollment">Noch kein Partnerkonto?<a href="/registrieren">Als Partner registrieren →</a></p>');
-    if(path.basename(file)!=='partner-start.html'&&!html.includes('/assets/workspace.css'))html=html.replace('</head>','<link rel="stylesheet" href="/assets/workspace.css"></head>');
+    if(!['partner-start.html','kundenaufnahme.html'].includes(path.basename(file))&&!html.includes('/assets/workspace.css'))html=html.replace('</head>','<link rel="stylesheet" href="/assets/workspace.css"></head>');
   }
-  if(context.isApp&&!html.includes('/assets/workspace-unified.css'))html=html.replace('</head>','<link rel="stylesheet" href="/assets/workspace-unified.css"></head>');
+  if(context.isApp&&path.basename(file)!=='kundenaufnahme.html'&&!html.includes('/assets/workspace-unified.css'))html=html.replace('</head>','<link rel="stylesheet" href="/assets/workspace-unified.css"></head>');
   return versionAssets(html);
 }
 
@@ -175,7 +177,7 @@ function send(res, status, headers, body, isHead) {
   // restrictions in the document as well, before any script or resource loads.
   // frame-ancestors is header-only; X-Frame-Options remains a separate header.
   if (/^text\/html\b/i.test(responseHeaders['Content-Type'] || '')) {
-    const policy = SECURITY_HEADERS['Content-Security-Policy'].split(';')
+    const policy = responseHeaders['Content-Security-Policy'].split(';')
       .map(value => value.trim()).filter(value => value && !/^frame-ancestors\b/i.test(value)).join('; ');
     const escaped = policy.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
     body = Buffer.from(String(body).replace(/<head\b[^>]*>/i, match => match +
@@ -225,6 +227,7 @@ const server = http.createServer(async (req, res) => {
   if(hostInfo.redirect)return send(res,308,{Location:hostInfo.redirect,'Cache-Control':'no-store'},'',isHead);
   const apiPath=req.url.split('?')[0];
   if(hostInfo.production&&!hostInfo.isApp&&apiPath.startsWith('/api/portal/'))return send(res,409,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'},JSON.stringify({error:'Die App ist umgezogen. Bitte app.unfallx.com/login öffnen und dort anmelden.',redirect:hosts.APP_ORIGIN+'/login'}),isHead);
+  if(['/kundenaufnahme','/kundenaufnahme.html'].includes(urlPath)){res.setHeader('Referrer-Policy','no-referrer');}
   if (req.url.split('?')[0].startsWith('/api/portal/')) return portal.handle(req, res, SECURITY_HEADERS);
 
   /* Anfrageformular: POST /api/anfrage (JSON) */
@@ -243,6 +246,18 @@ const server = http.createServer(async (req, res) => {
       'Content-Type': 'text/plain; charset=utf-8',
       'Allow': 'GET, HEAD, POST'
     }, 'Methode nicht erlaubt', false);
+  }
+
+  // Only these public PDF.js runtime assets are exposed; node_modules stays private.
+  const pdfAssets = { '/assets/customer-pdf/pdf.js':'legacy/build/pdf.min.mjs', '/assets/customer-pdf/pdf.worker.js':'legacy/build/pdf.worker.min.mjs' };
+  let pdfAsset = pdfAssets[urlPath];
+  if(urlPath.startsWith('/assets/customer-pdf/fonts/')) {
+    const name=urlPath.slice('/assets/customer-pdf/fonts/'.length);
+    if(/^[a-zA-Z0-9_-]+\.(pfb|ttf)$/.test(name) && fs.existsSync(path.join(ROOT,'node_modules/pdfjs-dist/standard_fonts',name))) pdfAsset='standard_fonts/'+name;
+  }
+  if(pdfAsset) {
+    try { const bytes=fs.readFileSync(path.join(ROOT,'node_modules/pdfjs-dist',pdfAsset)); return send(res,200,{'Content-Type':pdfAsset.endsWith('.mjs')?'text/javascript; charset=utf-8':'application/octet-stream','Cache-Control':'public, max-age=3600'},bytes,isHead); }
+    catch { return sendError(res,503,isHead,urlPath); }
   }
 
   /* Alte Sprachadressen behalten ihren Weg zum entsprechenden deutschen Inhalt. */
@@ -322,6 +337,7 @@ const server = http.createServer(async (req, res) => {
           'Content-Type': MIME[ext],
           'Content-Length': page.length,
           'Cache-Control': (hostInfo.isApp||hosts.appPath(urlPath))?'private, no-store, max-age=0':cacheFor(ext, false),
+          ...(path.basename(file)==='kundenaufnahme.html'?{'Referrer-Policy':'no-referrer','Content-Security-Policy':"default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; worker-src 'self'; font-src 'self' blob: data:; frame-src 'self' blob:; object-src 'self' blob:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"}:{}),
           ...((hostInfo.isApp||hosts.appPath(urlPath))?{'CDN-Cache-Control':'no-store','Vary':'Cookie','Referrer-Policy':'no-referrer','X-Robots-Tag':'noindex, nofollow'}:{})
         }, page, isHead);
       }

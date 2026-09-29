@@ -2,6 +2,7 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {loadHostingerGoogleEnv} = require('../portal/hostinger-env');
+const {loadHostingerAppleEnv} = require('../portal/hostinger-env');
 const root = '/home/u123456/domains/unfallx.com/hbuilds';
 const fixture = 'GOOGLE_CLIENT_ID="fixture.apps.googleusercontent.com"\nGOOGLE_CLIENT_SECRET="fixture-secret"\nNODE_OPTIONS="--require untrusted.js"\nSMTP_PASS=do-not-load\n';
 
@@ -79,4 +80,90 @@ test('0account credentials only load as a consistent pair; the issuer stays opti
  const withoutIssuer={};
  assert.equal(loadHostingerZeroaccountEnv(dir,withoutIssuer,()=> 'ZEROACCOUNT_CLIENT_ID=client\nZEROACCOUNT_CLIENT_SECRET=test-secret'),true);
  assert.equal(withoutIssuer.ZEROACCOUNT_ISSUER,undefined);
+});
+
+const appleValues = {
+  APPLE_CLIENT_ID: 'fixture.partner.login', APPLE_TEAM_ID: 'FIXTURE123',
+  APPLE_KEY_ID: 'FIXTUREKEY', APPLE_PRIVATE_KEY: 'fixture-private-key',
+  OAUTH_TOKEN_ENCRYPTION_KEY: 'ab'.repeat(32)
+};
+const appleConfig = Object.entries({...appleValues, GOOGLE_CLIENT_SECRET: 'do-not-load', NODE_OPTIONS: '--require untrusted.js'})
+  .map(([key, value]) => key + '=' + value).join('\n');
+
+test('Apple config loads all five allowlisted values from current and resolved Hostinger paths', () => {
+  for (const dir of [root + '/current/nodejs', root + '/versions/01abc-def/nodejs']) {
+    const env = {GOOGLE_CLIENT_SECRET: 'existing-google'};
+    assert.equal(loadHostingerAppleEnv(dir, env, (file, encoding) => {
+      assert.equal(file, root + '/config/.env'); assert.equal(encoding, 'utf8'); return appleConfig;
+    }), true);
+    assert.deepEqual(env, {...appleValues, GOOGLE_CLIENT_SECRET: 'existing-google'});
+  }
+});
+
+test('Apple config never reads private files outside the intended production deployment', () => {
+  const read = () => assert.fail('Unexpected private file read');
+  for (const dir of ['/tmp/nodejs', root + '/current/../nodejs', root.replace('unfallx.com', 'other.com') + '/current/nodejs', root + '/public_html']) {
+    assert.equal(loadHostingerAppleEnv(dir, {}, read), false);
+  }
+  assert.equal(loadHostingerAppleEnv(root + '/current/nodejs', {NODE_ENV: 'test'}, read), false);
+  const injected = {...appleValues};
+  assert.equal(loadHostingerAppleEnv(root + '/current/nodejs', injected, read), false);
+  assert.deepEqual(injected, appleValues);
+});
+
+test('Apple partial configuration is completed only when every existing value agrees', () => {
+  for (const key of Object.keys(appleValues)) {
+    const matching = {[key]: appleValues[key]};
+    assert.equal(loadHostingerAppleEnv(root + '/current/nodejs', matching, () => appleConfig), true);
+    assert.deepEqual(matching, appleValues);
+    const conflict = {[key]: 'different-existing-value'};
+    assert.equal(loadHostingerAppleEnv(root + '/current/nodejs', conflict, () => appleConfig), false);
+    assert.deepEqual(conflict, {[key]: 'different-existing-value'});
+  }
+});
+
+test('Missing Apple values and invalid encryption keys leave the environment untouched', () => {
+  for (const missing of Object.keys(appleValues)) {
+    const incomplete = Object.entries(appleValues).filter(([key]) => key !== missing).map(([k, v]) => k + '=' + v).join('\n');
+    const env = {GOOGLE_CLIENT_ID: 'existing-google'};
+    assert.equal(loadHostingerAppleEnv(root + '/current/nodejs', env, () => incomplete), false);
+    assert.deepEqual(env, {GOOGLE_CLIENT_ID: 'existing-google'});
+  }
+  for (const invalid of ['short', 'x'.repeat(64), 'ab'.repeat(31), 'ab'.repeat(33)]) {
+    const env = {};
+    assert.equal(loadHostingerAppleEnv(root + '/current/nodejs', env, () => appleConfig.replace(appleValues.OAUTH_TOKEN_ENCRYPTION_KEY, invalid)), false);
+    assert.deepEqual(env, {});
+  }
+});
+
+test('Apple private-file failures do not expose or modify configuration', () => {
+  for (const read of [() => { throw Error('private-data-not-for-logs'); }, () => '']) {
+    const env = {APPLE_CLIENT_ID: appleValues.APPLE_CLIENT_ID};
+    assert.equal(loadHostingerAppleEnv(root + '/current/nodejs', env, read), false);
+    assert.deepEqual(env, {APPLE_CLIENT_ID: appleValues.APPLE_CLIENT_ID});
+  }
+});
+
+test('Imported Apple token encryption survives a process restart without key replacement', () => {
+  const {tokenVault} = require('../portal/oauth-tokens');
+  const env = {};
+  assert.equal(loadHostingerAppleEnv(root + '/current/nodejs', env, () => appleConfig), true);
+  const first = tokenVault(env);
+  assert.equal(first.ready, true);
+  const sealed = first.seal('fixture-refresh-token', 'fixture-identity');
+  const restarted = {};
+  assert.equal(loadHostingerAppleEnv(root + '/versions/next-release/nodejs', restarted, () => appleConfig), true);
+  assert.equal(tokenVault(restarted).open(sealed, 'fixture-identity'), 'fixture-refresh-token');
+  assert.throws(() => tokenVault(restarted).open(sealed, 'different-identity'));
+});
+
+test('APNs private config loads only a complete matching push key for the iPhone topic',()=>{
+ const {loadHostingerPushEnv}=require('../portal/hostinger-env');
+ const values={APNS_TEAM_ID:'TEAM123456',APNS_KEY_ID:'KEY1234567',APNS_PRIVATE_KEY:'test-only',APNS_TOPIC:'de.schadenakte.ios'},text=Object.entries({...values,APPLE_PRIVATE_KEY:'never-replace',NODE_OPTIONS:'never-load'}).map(([k,v])=>k+'='+v).join('\n'),dir=root+'/current/nodejs';
+ const env={APPLE_PRIVATE_KEY:'existing'};assert.equal(loadHostingerPushEnv(dir,env,()=>text),true);assert.deepEqual(env,{...values,APPLE_PRIVATE_KEY:'existing'});
+ for(const omit of Object.keys(values)){const incomplete=Object.entries(values).filter(([k])=>k!==omit).map(([k,v])=>k+'='+v).join('\n');assert.equal(loadHostingerPushEnv(dir,{},()=>incomplete),false);}
+ assert.equal(loadHostingerPushEnv(dir,{},()=>text.replace('de.schadenakte.ios','wrong')),false);
+ const conflict={APNS_KEY_ID:'OTHERKEY00'};assert.equal(loadHostingerPushEnv(dir,conflict,()=>text),false);assert.deepEqual(conflict,{APNS_KEY_ID:'OTHERKEY00'});
+ for(const path of ['/tmp/app',root+'/current/../nodejs'])assert.equal(loadHostingerPushEnv(path,{},()=>assert.fail('Unexpected read')),false);
+ assert.equal(loadHostingerPushEnv(dir,{NODE_ENV:'test'},()=>assert.fail('Unexpected read')),false);
 });

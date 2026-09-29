@@ -27,3 +27,16 @@ test('explicit submission IDs make finish retries idempotent after a later reque
  await assert.rejects(api.route(path,req(key(),{submissionID:second})),e=>e.status===404);
  }finally{await s.close();}
 });
+
+test('annotated photos require a same-case original, preserve its bytes and never satisfy a missing perspective',async()=>{
+ const {s,tx,api}=await setup();try{
+ const cid=id(),k=key();await api.route('/mobile/cases',req(k,make(cid)));const path='/mobile/cases/'+cid+'/files';
+ const bytes=await sharp({create:{width:10,height:10,channels:3,background:'red'}}).jpeg().toBuffer(),source=id();
+ const headers={'x-file-kind':'photo_annotation','x-file-name':'Markiert.jpg','x-asset-id':id(),'x-source-asset-id':source,'x-perspective':'other','content-type':'image/jpeg'};
+ await assert.rejects(api.route(path,req(k,null,headers,bytes)),e=>e.status===409);
+ const original=await api.route(path,req(k,null,{'x-file-kind':'photo','x-file-name':'Original.jpg','x-asset-id':source,'x-perspective':'damageDetail','content-type':'image/jpeg'},bytes));
+ const copy=await api.route(path,req(k,null,headers,bytes));assert.notEqual(copy.id,original.id);assert.equal((await api.route(path,req(k,null,headers,bytes))).alreadyStored,true);
+ const files=await tx(q=>q.list('file',cid));assert.equal(files.find(f=>f.id===copy.id).sourceFileId,original.id);assert.equal(files.filter(f=>f.kind==='photo').length,1);
+ await assert.rejects(api.route(path,req(k,null,{...headers,'x-asset-id':id(),'x-perspective':'frontLeft'},bytes)),e=>e.status===409);
+ }finally{await s.close();}
+});
