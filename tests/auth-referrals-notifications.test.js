@@ -219,4 +219,41 @@ test('0account registers the partner without the form when it supplies every req
  }finally{global.fetch=originalFetch;await h.close();}
 });
 
+test('0account sessions carry the ID-token hint so their logout also ends the 0account session',async()=>{
+ const ISSUER='https://rplogout-v1.0account.test',NS='https://0account.com/claims/fields';
+ const {generateKeyPair,exportJWK,SignJWT}=await import('jose'),pair=await generateKeyPair('Ed25519'),key=await exportJWK(pair.publicKey);key.kid='zeroaccount-rplogout';key.alg='EdDSA';key.use='sig';
+ const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;
+ let nextJWT='',userinfo={};
+ global.fetch=async(input,options)=>{const url=String(input);
+  if(url===ISSUER+'/.well-known/jwks.json')return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
+  return originalFetch(input,options);};
+ const complete={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',termsAndConditions:true,privacyPolicy:true};
+ async function oauthSession(address,fields){userinfo={[NS]:fields};const start=await h.call('/oauth/start',{provider:'0account'});const url=new URL(start.json.redirect);nextJWT=await new SignJWT({sub:'sub-'+address,email:address,email_verified:true,given_name:'Erika',family_name:'Musterfrau',phone_number:'+4930123456',nonce:url.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);return h.call('/oauth/0account/callback?state='+url.searchParams.get('state')+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});}
+ const hint=value=>{assert.match(value,new RegExp('^'+ISSUER.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'/oauth/logout\\?id_token_hint='));const token=decodeURIComponent(value.split('id_token_hint=')[1]);assert.equal(token.split('.').length,3);return token;};
+ try{
+  // Direkte Registrierung: die Abmeldung liefert den Abmeldeendpunkt mit Hinweis.
+  const direct=await oauthSession('rplogout@example.com',complete);
+  assert.equal(direct.location,'/portal');
+  const directActor={cookie:direct.cookie.match(/ux_session=[a-f0-9]{64}/)[0]};directActor.csrf=(await h.call('/me',undefined,directActor)).json.csrf;
+  const ended=await h.call('/logout',{},directActor);
+  assert.equal(ended.json.ok,true);hint(ended.json.idpLogout);
+
+  // Weg über das Formular: der Hinweis wandert aus dem Zwischenstand mit.
+  const pending=await oauthSession('rpform@example.com',{...complete,privacyPolicy:false});
+  assert.equal(pending.location,'/konto-vervollstaendigen');
+  const onboarding=pending.cookie.match(/ux_onboarding=[a-f0-9]{64}/)[0],profile=(await h.call('/oauth/profile',undefined,{cookie:onboarding})).json;
+  const finished=await h.call('/oauth/complete',{typeOfAccount:'partner',company:'Musterwerkstatt GmbH',contact:'Erika Musterfrau',street:'Teststraße 5',postcode:'10115',city:'Berlin',type:'Werkstatt',phone:'+4930123456',privacy:true,terms:true},{cookie:onboarding,csrf:profile.csrf});
+  assert.equal(finished.status,200);
+  const formActor={cookie:finished.cookie.match(/ux_session=[a-f0-9]{64}/)[0]};formActor.csrf=(await h.call('/me',undefined,formActor)).json.csrf;
+  const endedForm=await h.call('/logout',{},formActor);
+  assert.equal(endedForm.json.ok,true);hint(endedForm.json.idpLogout);
+
+  // Passwort-Sitzungen haben keinen Anbieter; dort fehlt der Endpunkt.
+  const password=await h.register('pwonly@example.com');
+  const plain=await h.call('/logout',{},password);
+  assert.equal(plain.json.ok,true);assert.equal(plain.json.idpLogout,undefined);
+ }finally{global.fetch=originalFetch;await h.close();}
+});
 test('Registration mail failure leaves no account or usable token; retry delivers one complete branded email',async()=>{const h=await harness();try{const data={email:'mail-failure@example.com',company:'Testbetrieb GmbH',contact:'Testpartner',street:'Teststraße 1',postcode:'10115',city:'Berlin',type:'Werkstatt',phone:'030123456',privacy:true,terms:true,password};h.fail(true);assert.equal((await h.call('/register',data)).status,503);assert.equal(await h.store.transaction(s=>s.get('user',D.hash(data.email))),null);assert.equal((await h.store.transaction(s=>s.list('token'))).length,0);h.fail(false);assert.equal((await h.call('/register',data)).status,200);assert.equal(h.messages.length,1);assert.match(h.messages[0].html,/data-unfallx-email="v2"/);assert.equal((h.messages[0].html.match(/cid:unfallx-logo/g)||[]).length,1);}finally{await h.close();}});
