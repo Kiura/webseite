@@ -30,7 +30,7 @@ function loadHostingerStorageEnv(appDir, env = process.env, read = fs.readFileSy
   const deployment=String(appDir).match(/^(\/home\/u\d+\/domains\/unfallx\.com\/hbuilds)\/(?:current|versions\/[a-zA-Z0-9-]+)\/nodejs$/);
   if(!deployment)return false;
   try {
-    const values=parseEnv(read(deployment[1]+'/config/.env','utf8'));
+    const values = parseEnv(read(deployment[1] + '/config/.env', 'utf8'));
     if(!keys.every(key=>values[key])||keys.some(key=>env[key]&&env[key]!==values[key]))return false;
     for(const key of keys)if(!env[key])env[key]=values[key];
     if(!env.PORTAL_STORAGE_MB&&values.PORTAL_STORAGE_MB)env.PORTAL_STORAGE_MB=values.PORTAL_STORAGE_MB;
@@ -49,6 +49,29 @@ function loadHostingerAutoixpertEnv(appDir, env = process.env, read = fs.readFil
     // Never accidentally combine credentials belonging to different clients.
     if (keys.some(key => env[key] && env[key] !== values[key])) return false;
     for (const key of keys) if (!env[key]) env[key] = values[key];
+    return true;
+  } catch {
+    // A missing private config must not take password login or uploads offline.
+    // Never log file contents, credentials or parser errors.
+    return false;
+  }
+}
+
+// ZEROACCOUNT_ISSUER ist bewusst nicht Pflicht: ohne Angabe gilt die
+// Produktionsadresse. Nur gesetzt, wenn beide Zugangsdaten vorliegen, damit
+// eine halbe Konfiguration die Anmeldung nicht sichtbar, aber unbrauchbar macht.
+function loadHostingerZeroaccountEnv(appDir, env = process.env, read = fs.readFileSync) {
+  if (env.NODE_ENV === 'test' || (env.ZEROACCOUNT_CLIENT_ID && env.ZEROACCOUNT_CLIENT_SECRET)) return false;
+  const deployment = String(appDir).match(/^(\/home\/u\d+\/domains\/unfallx\.com\/hbuilds)\/(?:current|versions\/[a-zA-Z0-9-]+)\/nodejs$/);
+  if (!deployment) return false;
+  try {
+    const values = parseEnv(read(deployment[1] + '/config/.env', 'utf8'));
+    if (!values.ZEROACCOUNT_CLIENT_ID || !values.ZEROACCOUNT_CLIENT_SECRET) return false;
+    const keys = ['ZEROACCOUNT_CLIENT_ID', 'ZEROACCOUNT_CLIENT_SECRET'];
+    // Never accidentally combine credentials belonging to different clients.
+    if (keys.some(key => env[key] && env[key] !== values[key])) return false;
+    for (const key of keys) if (!env[key]) env[key] = values[key];
+    if (!env.ZEROACCOUNT_ISSUER && values.ZEROACCOUNT_ISSUER) env.ZEROACCOUNT_ISSUER = values.ZEROACCOUNT_ISSUER;
     return true;
   } catch {
     // A missing private config must not take password login or uploads offline.
@@ -76,14 +99,14 @@ function loadHostingerAppleEnv(appDir, env = process.env, read = fs.readFileSync
   }
 }
 
-module.exports = {loadHostingerGoogleEnv,loadHostingerStorageEnv,loadHostingerAutoixpertEnv,loadHostingerAppleEnv};
+module.exports = {loadHostingerGoogleEnv,loadHostingerStorageEnv,loadHostingerAutoixpertEnv,loadHostingerZeroaccountEnv,loadHostingerAppleEnv};
 
 function loadHostingerPushEnv(appDir, env = process.env, read = fs.readFileSync) {
  const keys=['APNS_TEAM_ID','APNS_KEY_ID','APNS_PRIVATE_KEY','APNS_TOPIC'];
  if(env.NODE_ENV==='test'||keys.every(k=>env[k]))return false;
  const deployment=String(appDir).match(/^(\/home\/u\d+\/domains\/unfallx\.com\/hbuilds)\/(?:current|versions\/[a-zA-Z0-9-]+)\/nodejs$/);
  if(!deployment)return false;
- try {const values=parseEnv(read(deployment[1]+'/config/.env','utf8'));
+ try {const values=parseEnv(read(deployment[1] + '/config/.env', 'utf8'));
   if(!keys.every(k=>values[k])||values.APNS_TOPIC!=='de.schadenakte.ios'||keys.some(k=>env[k]&&env[k]!==values[k]))return false;
   for(const key of keys)if(!env[key])env[key]=values[key];return true;
  }catch{return false;}

@@ -74,4 +74,186 @@ test('OAuth authorization-code success, onboarding and explicit linking never me
  }finally{global.fetch=originalFetch;await h.close();}
 });
 
+test('0account signs EdDSA and registers a partner through the same authorization-code flow',async()=>{
+ // 0account signiert mit EdDSA statt RS256 und liefert seine Adressen je Umgebung.
+ const ISSUER='https://staging-v1.0account.com';
+ const {generateKeyPair,exportJWK,SignJWT,createLocalJWKSet}=await import('jose'),pair=await generateKeyPair('Ed25519'),key=await exportJWK(pair.publicKey);key.kid='zeroaccount-test';key.alg='EdDSA';key.use='sig';
+ const settings={name:'0account',auth:ISSUER+'/oauth/authorize',token:ISSUER+'/oauth/token',keys:ISSUER+'/.well-known/jwks.json',issuer:ISSUER,alg:'EdDSA'};
+ const sign=claims=>new SignJWT({sub:'zero-subject',email:'zero@example.com',email_verified:true,nonce:'nonce-1',...claims}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(claims?.iss||ISSUER).setAudience(claims?.aud||'zero-client').setIssuedAt().setExpirationTime(claims?.exp||'5m').sign(pair.privateKey);
+ // Ein RS256-Token darf für 0account niemals akzeptiert werden und umgekehrt.
+ const keys=createLocalJWKSet({keys:[key]});
+ assert.equal((await verifyIdentity(await sign(),'0account','zero-client','nonce-1',keys,settings)).sub,'zero-subject');
+ await assert.rejects(verifyIdentity(await sign({iss:'https://evil.example'}),'0account','zero-client','nonce-1',keys,settings));
+ await assert.rejects(verifyIdentity(await sign(),'0account','other-client','nonce-1',keys,settings));
+ await assert.rejects(verifyIdentity(await sign(),'0account','zero-client','wrong-nonce',keys,settings));
+
+ const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;let nextJWT='',lastExchange=null;
+ global.fetch=async(input,options)=>{const url=String(input);if(url===settings.keys)return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});if(url===settings.token){lastExchange=Object.fromEntries(options.body);return new Response(JSON.stringify({id_token:nextJWT}),{status:200,headers:{'Content-Type':'application/json'}});}return originalFetch(input,options);};
+ try{
+  // Die Schaltfläche steht vor Google und nennt 0account beim Namen.
+  const offered=(await h.call('/oauth/providers')).json.providers;
+  assert.deepEqual(offered.map(p=>p.id),['0account','google','apple']);
+  assert.equal(offered[0].enabled,true);
+
+  const start=await h.call('/oauth/start',{provider:'0account'});assert.equal(start.status,200);
+  const url=new URL(start.json.redirect);assert.equal(url.origin,ISSUER);
+  assert.equal(url.pathname,'/oauth/authorize');
+  // 0account verlangt PKCE S256 und openid im Scope, sonst verweigert es den Start.
+  assert.equal(url.searchParams.get('code_challenge_method'),'S256');
+  assert.match(url.searchParams.get('scope'),/openid/);
+  assert.equal(url.searchParams.get('client_id'),'zero-client');
+  const state=url.searchParams.get('state');
+  nextJWT=await sign({nonce:url.searchParams.get('nonce')});
+  const result=await h.call('/oauth/0account/callback?state='+state+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});
+  assert.equal(result.status,303);
+  assert.equal(result.location,'/konto-vervollstaendigen');
+  assert.equal(lastExchange.redirect_uri,'http://localhost/api/portal/oauth/0account/callback');
+  assert.equal(lastExchange.client_secret,'zero-secret');
+  assert.equal(Buffer.from(D.hash(lastExchange.code_verifier),'hex').toString('base64url'),url.searchParams.get('code_challenge'));
+  const cookie=result.cookie.match(/ux_onboarding=[a-f0-9]{64}/)[0];
+  assert.equal((await h.call('/oauth/profile',undefined,{cookie})).json.email,'zero@example.com');
+ }finally{global.fetch=originalFetch;await h.close();}
+});
+
+test('0account prefills the partner form from its claims and never lets /userinfo change the identity',async()=>{
+ // Eigene Adresse je Test: der Schlüsselcache hängt an der JWKS-Adresse, ein
+ // zweiter Test mit derselben Adresse bekäme sonst die Schlüssel des ersten.
+ const ISSUER='https://prefill-v1.0account.test';
+ const {generateKeyPair,exportJWK,SignJWT}=await import('jose'),pair=await generateKeyPair('Ed25519'),key=await exportJWK(pair.publicKey);key.kid='zeroaccount-prefill';key.alg='EdDSA';key.use='sig';
+ const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;
+ let nextJWT='',userinfo={};
+ global.fetch=async(input,options)=>{const url=String(input);
+  if(url===ISSUER+'/.well-known/jwks.json')return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/userinfo'){assert.equal(options.headers.Authorization,'Bearer zero-access-token');return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});}
+  return originalFetch(input,options);};
+ try{
+  // Der Anbieter kennt Firma und Anschrift; das Formular übernimmt sie.
+  // Ohne Zustimmung zum Datenschutz greift der Rückfall aufs Formular, und
+  // genau dessen Vorbelegung wird hier geprüft.
+  userinfo={'https://0account.com/claims/fields':{companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',companyType:'Werkstatt',referralCode:'ux-aaaaaaaaaaaa',termsAndConditions:true},
+   // Ein abweichendes sub/E-Mail aus /userinfo darf die geprüfte Identität nicht ersetzen.
+   sub:'attacker-subject',email:'attacker@example.com'};
+  const start=await h.call('/oauth/start',{provider:'0account'});
+  const url=new URL(start.json.redirect),state=url.searchParams.get('state');
+  nextJWT=await new SignJWT({sub:'zero-subject',email:'partner@example.com',email_verified:true,given_name:'Erika',family_name:'Musterfrau',phone_number:'+4930123456',nonce:url.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);
+  const result=await h.call('/oauth/0account/callback?state='+state+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});
+  assert.equal(result.location,'/konto-vervollstaendigen');
+  const cookie=result.cookie.match(/ux_onboarding=[a-f0-9]{64}/)[0],profile=(await h.call('/oauth/profile',undefined,{cookie})).json;
+  // Identität stammt aus dem ID-Token, nicht aus /userinfo.
+  assert.equal(profile.email,'partner@example.com');
+  // given_name + family_name ergeben den Ansprechpartner; 0account sendet kein "name".
+  assert.equal(profile.name,'Erika Musterfrau');
+  assert.equal(profile.phone,'+4930123456');
+  // Empfehlungscodes werden in Großschreibung geführt; Zustimmungen kommen als Häkchen zurück.
+  assert.deepEqual(profile.company,{name:'Musterwerkstatt GmbH',street:'Teststraße 5',postcode:'10115',city:'Berlin',type:'Werkstatt',referralCode:'UX-AAAAAAAAAAAA',terms:true,privacy:false});
+  // Ohne eigene Felder bleibt das Formular leer und weiterhin benutzbar.
+  userinfo={};
+  const second=await h.call('/oauth/start',{provider:'0account'});
+  const secondUrl=new URL(second.json.redirect);
+  nextJWT=await new SignJWT({sub:'zero-subject-2',email:'zweiter@example.com',email_verified:true,given_name:'Max',nonce:secondUrl.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);
+  const plain=await h.call('/oauth/0account/callback?state='+secondUrl.searchParams.get('state')+'&code=test-code',undefined,{cookie:second.cookie.split(';')[0]});
+  const plainCookie=plain.cookie.match(/ux_onboarding=[a-f0-9]{64}/)[0],plainProfile=(await h.call('/oauth/profile',undefined,{cookie:plainCookie})).json;
+  assert.equal(plainProfile.name,'Max');assert.equal(plainProfile.phone,'');assert.deepEqual(plainProfile.company,{});
+ }finally{global.fetch=originalFetch;await h.close();}
+});
+
+test('0account registers the partner without the form when it supplies every required field',async()=>{
+ const ISSUER='https://noform-v1.0account.test',NS='https://0account.com/claims/fields';
+ const {generateKeyPair,exportJWK,SignJWT}=await import('jose'),pair=await generateKeyPair('Ed25519'),key=await exportJWK(pair.publicKey);key.kid='zeroaccount-noform';key.alg='EdDSA';key.use='sig';
+ const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;
+ let nextJWT='',userinfo={};
+ global.fetch=async(input,options)=>{const url=String(input);
+  if(url===ISSUER+'/.well-known/jwks.json')return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
+  return originalFetch(input,options);};
+ // Ohne companyType: die App kann die Unternehmensart nicht führen, genau so
+ // sieht der Produktivfall aus.
+ const complete={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',termsAndConditions:true,privacyPolicy:true};
+ async function flow(address,fields){
+  userinfo={[NS]:fields};
+  const start=await h.call('/oauth/start',{provider:'0account'});
+  const url=new URL(start.json.redirect);
+  nextJWT=await new SignJWT({sub:'sub-'+address,email:address,email_verified:true,given_name:'Erika',family_name:'Musterfrau',phone_number:'+4930123456',nonce:url.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);
+  return h.call('/oauth/0account/callback?state='+url.searchParams.get('state')+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});
+ }
+ try{
+  const registered=await flow('vollstaendig@example.com',complete);
+  // Direkt im Portal, ohne Zwischenformular.
+  assert.equal(registered.location,'/portal');
+  assert.match(registered.cookie,/ux_session=/);
+  const user=await h.store.transaction(s=>s.get('user',D.hash('vollstaendig@example.com')));
+  assert.equal(user.role,'partner');assert.equal(user.name,'Erika Musterfrau');assert.equal(user.phone,'+4930123456');
+  assert.ok(user.verifiedAt);assert.equal(user.passwordHash,undefined);
+  const company=await h.store.transaction(s=>s.get('company',user.companyId));
+  assert.equal(company.name,'Musterwerkstatt GmbH');assert.equal(company.city,'Berlin');
+  // Ohne Angabe gilt dieselbe Vorauswahl, die das Formular ungefragt sendet.
+  assert.equal(company.type,'Werkstatt');
+  // Der Betrieb wird wie immer erst nach Prüfung freigegeben.
+  assert.equal(company.status,'pending');
+  // Dieselbe Begrüßung wie nach dem Formular.
+  assert.equal(h.messages.filter(m=>m.to==='vollstaendig@example.com').length,1);
+
+  // Ein mitgegebener Empfehlungscode geht denselben Weg wie über das Formular
+  // (referrals.attribute ist derzeit wirkungslos, neue Zuordnungen sind
+  // pausiert) und darf die Registrierung nicht stören.
+  const werber=await flow('geworben@example.com',{...complete,referralCode:'ux-bbbbbbbbbbbb'});
+  assert.equal(werber.location,'/portal');
+  assert.ok(await h.store.transaction(s=>s.get('user',D.hash('geworben@example.com'))));
+
+  // Eine zulässige Art wird übernommen, eine unbekannte fällt auf die
+  // Vorauswahl zurück, statt die Registrierung scheitern zu lassen.
+  await flow('abschlepp@example.com',{...complete,companyType:'Abschleppdienst'});
+  const towing=await h.store.transaction(async s=>s.get('company',(await s.get('user',D.hash('abschlepp@example.com'))).companyId));
+  assert.equal(towing.type,'Abschleppdienst');
+  await flow('unbekannt@example.com',{...complete,companyType:'Autohaus'});
+  const unknown=await h.store.transaction(async s=>s.get('company',(await s.get('user',D.hash('unbekannt@example.com'))).companyId));
+  assert.equal(unknown.type,'Werkstatt');
+
+  // Fehlt eine Angabe oder eine Zustimmung, bleibt es beim Formular.
+  for(const missing of [{...complete,city:''},{...complete,companyName:''},{...complete,termsAndConditions:false},{...complete,privacyPolicy:undefined}]){
+   const partial=await flow('teil-'+D.hash(JSON.stringify(missing)).slice(0,8)+'@example.com',missing);
+   assert.equal(partial.location,'/konto-vervollstaendigen');
+  }
+ }finally{global.fetch=originalFetch;await h.close();}
+});
+
+test('0account sessions carry the ID-token hint so their logout also ends the 0account session',async()=>{
+ const ISSUER='https://rplogout-v1.0account.test',NS='https://0account.com/claims/fields';
+ const {generateKeyPair,exportJWK,SignJWT}=await import('jose'),pair=await generateKeyPair('Ed25519'),key=await exportJWK(pair.publicKey);key.kid='zeroaccount-rplogout';key.alg='EdDSA';key.use='sig';
+ const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;
+ let nextJWT='',userinfo={};
+ global.fetch=async(input,options)=>{const url=String(input);
+  if(url===ISSUER+'/.well-known/jwks.json')return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
+  return originalFetch(input,options);};
+ const complete={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',termsAndConditions:true,privacyPolicy:true};
+ async function oauthSession(address,fields){userinfo={[NS]:fields};const start=await h.call('/oauth/start',{provider:'0account'});const url=new URL(start.json.redirect);nextJWT=await new SignJWT({sub:'sub-'+address,email:address,email_verified:true,given_name:'Erika',family_name:'Musterfrau',phone_number:'+4930123456',nonce:url.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);return h.call('/oauth/0account/callback?state='+url.searchParams.get('state')+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});}
+ const hint=value=>{assert.match(value,new RegExp('^'+ISSUER.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'/oauth/logout\\?id_token_hint='));const token=decodeURIComponent(value.split('id_token_hint=')[1]);assert.equal(token.split('.').length,3);return token;};
+ try{
+  // Direkte Registrierung: die Abmeldung liefert den Abmeldeendpunkt mit Hinweis.
+  const direct=await oauthSession('rplogout@example.com',complete);
+  assert.equal(direct.location,'/portal');
+  const directActor={cookie:direct.cookie.match(/ux_session=[a-f0-9]{64}/)[0]};directActor.csrf=(await h.call('/me',undefined,directActor)).json.csrf;
+  const ended=await h.call('/logout',{},directActor);
+  assert.equal(ended.json.ok,true);hint(ended.json.idpLogout);
+
+  // Weg über das Formular: der Hinweis wandert aus dem Zwischenstand mit.
+  const pending=await oauthSession('rpform@example.com',{...complete,privacyPolicy:false});
+  assert.equal(pending.location,'/konto-vervollstaendigen');
+  const onboarding=pending.cookie.match(/ux_onboarding=[a-f0-9]{64}/)[0],profile=(await h.call('/oauth/profile',undefined,{cookie:onboarding})).json;
+  const finished=await h.call('/oauth/complete',{typeOfAccount:'partner',company:'Musterwerkstatt GmbH',contact:'Erika Musterfrau',street:'Teststraße 5',postcode:'10115',city:'Berlin',type:'Werkstatt',phone:'+4930123456',privacy:true,terms:true},{cookie:onboarding,csrf:profile.csrf});
+  assert.equal(finished.status,200);
+  const formActor={cookie:finished.cookie.match(/ux_session=[a-f0-9]{64}/)[0]};formActor.csrf=(await h.call('/me',undefined,formActor)).json.csrf;
+  const endedForm=await h.call('/logout',{},formActor);
+  assert.equal(endedForm.json.ok,true);hint(endedForm.json.idpLogout);
+
+  // Passwort-Sitzungen haben keinen Anbieter; dort fehlt der Endpunkt.
+  const password=await h.register('pwonly@example.com');
+  const plain=await h.call('/logout',{},password);
+  assert.equal(plain.json.ok,true);assert.equal(plain.json.idpLogout,undefined);
+ }finally{global.fetch=originalFetch;await h.close();}
+});
 test('Registration mail failure leaves no account or usable token; retry delivers one complete branded email',async()=>{const h=await harness();try{const data={email:'mail-failure@example.com',company:'Testbetrieb GmbH',contact:'Testpartner',street:'Teststraße 1',postcode:'10115',city:'Berlin',type:'Werkstatt',phone:'030123456',privacy:true,terms:true,password};h.fail(true);assert.equal((await h.call('/register',data)).status,503);assert.equal(await h.store.transaction(s=>s.get('user',D.hash(data.email))),null);assert.equal((await h.store.transaction(s=>s.list('token'))).length,0);h.fail(false);assert.equal((await h.call('/register',data)).status,200);assert.equal(h.messages.length,1);assert.match(h.messages[0].html,/data-unfallx-email="v2"/);assert.equal((h.messages[0].html.match(/cid:unfallx-logo/g)||[]).length,1);}finally{await h.close();}});

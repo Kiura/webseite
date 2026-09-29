@@ -12,6 +12,7 @@ require('./portal/hostinger-env').loadHostingerAppleEnv(__dirname);
 require('./portal/hostinger-env').loadHostingerPushEnv(__dirname);
 require('./portal/hostinger-env').loadHostingerStorageEnv(__dirname);
 require('./portal/hostinger-env').loadHostingerAutoixpertEnv(__dirname);
+require('./portal/hostinger-env').loadHostingerZeroaccountEnv(__dirname);
 const anfrage = require('./anfrage');
 const hosts = require('./portal/hosts');
 const help = require('./assets/help-content');
