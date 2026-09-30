@@ -158,9 +158,14 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
    assert(!('nonce'in payload),'Ungültige Rückmeldung.',400);
    assert(payload.events&&typeof payload.events==='object'&&'http://schemas.openid.net/event/backchannel-logout'in payload.events,'Ungültige Rückmeldung.',400);
    assert(typeof payload.sid==='string'&&payload.sid.length>0&&payload.sid.length<=64,'Ungültige Rückmeldung.',400);
-   await tx(async s=>{for(const session of await s.list('session'))if(session.idp?.provider==='0account'&&session.idp.sid===payload.sid)await s.remove('session',session.id);});
+   await tx(async s=>{await rate(s,'backchannel:'+ip(req),60);for(const session of await s.list('session'))if(session.idp?.provider==='0account'&&session.idp.sid===payload.sid)await s.remove('session',session.id);});
    return {ok:true};
-  }catch(e){console.error('Back-channel logout failed:',e.code||e.status||'invalid');res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'invalid_request'}));return null;}
+  }catch(e){
+   // Fehlkonfiguration und Ausfälle behalten ihren Status; nur ein ungültiger
+   // Hinweis antwortet gemäß Spezifikation mit 400.
+   if(e instanceof Problem)throw e;
+   console.error('Back-channel logout failed:',e.code||'invalid');
+   res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'invalid_request'}));return null;}
  }
  async function begin(req,res,data,nativeRequest=null,nativeLink=null){
 const p=text(data.provider,20,true);assert(table[p]&&configured(p),'Diese Anmeldemethode wird noch eingerichtet.',503);const state=random(),binding=random(),nonce=random(),verifier=random();let actor=null;
