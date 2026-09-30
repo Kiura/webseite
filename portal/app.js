@@ -16,7 +16,7 @@ const {accessEmail}=require('./email-templates');
 const passwords=require('./passwords');
 const {notice}=require('./brand-mail');
 const {publicUser}=D;
-const {createOAuth,zeroaccount,ZEROACCOUNT_END_SESSION}=require('./oauth');
+const {createOAuth,zeroaccount,ZEROACCOUNT_END_SESSION,ZEROACCOUNT_BACKCHANNEL}=require('./oauth');
 const {createReferrals}=require('./referrals');
 const {createNotifications}=require('./notifications');
 const {createSecurity}=require('./security');
@@ -141,6 +141,7 @@ function createPortal(options={}) {
  if(path.startsWith('/mobile/push/')){assert(scope().workspace==='partner'||local&&!scope().production,'Nur im Partnerbereich.',403);assert(req.method!=='POST'||req.headers.origin===requestOrigin(),'Anfrageherkunft nicht erlaubt.',403);return mobilePush.route(path,req);}
  if(path.startsWith('/mobile/')&&!path.startsWith('/mobile/chat/')){assert(scope().workspace==='partner'||local&&!scope().production,'Kundenaufnahmen nur im App-Bereich.',403);assert(!req.headers.origin||req.headers.origin===requestOrigin(),'Anfrageherkunft nicht erlaubt.',403);return mobileIntake.route(path,req);}
  if(/^\/oauth\/(google|apple)\/callback$/.test(path)&&['GET','POST'].includes(req.method))return oauth.route(path,req,res,url);
+ if(path===ZEROACCOUNT_BACKCHANNEL&&req.method==='POST')return oauth.route(path,req,res,url);
  if(req.method==='POST')assert(req.headers.origin===requestOrigin(),'Anfrageherkunft nicht erlaubt.',403);
  assert(['GET','POST'].includes(req.method),'Methode nicht erlaubt.',405);
  if(path==='/customer/handoff'){assert(scope().workspace==='partner'||local&&!scope().production,'Nur im App-Bereich.',403);return mobileIntake.customerHandoff.publicRoute(req,res);}

@@ -10,6 +10,8 @@ const ZEROACCOUNT_DEFAULT_ISSUER='https://v1.0account.com';
 function zeroaccount(env){const base=String(env.ZEROACCOUNT_ISSUER||ZEROACCOUNT_DEFAULT_ISSUER).replace(/\/+$/,'');return {name:'0account',auth:base+'/oauth/authorize',token:base+'/oauth/token',keys:base+'/.well-known/jwks.json',userinfo:base+'/oauth/userinfo',issuer:base,alg:'EdDSA'};}
 // Für die Abmeldung: der Endpunkt erwartet den ursprünglichen ID-Token als Hinweis.
 const ZEROACCOUNT_END_SESSION='/oauth/logout';
+// Empfangsadresse für den Back-Channel-Logout von 0account (Server zu Server).
+const ZEROACCOUNT_BACKCHANNEL='/oauth/0account/backchannel-logout';
 const providers={
  '0account':zeroaccount(process.env),
  google:{name:'Google',auth:'https://accounts.google.com/o/oauth2/v2/auth',token:'https://oauth2.googleapis.com/token',keys:'https://www.googleapis.com/oauth2/v3/certs',issuer:['https://accounts.google.com','accounts.google.com']},
@@ -110,7 +112,7 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
    const key=hash(p+':'+identity.sub);const protectedToken=p==='apple'?vault.seal(result.refresh_token||result.access_token,key):null;const tokenType=result.refresh_token?'refresh_token':'access_token';const outcome=await tx(async s=>{
     let mapping=await s.get('identity',key);if(mapping&&protectedToken){mapping={...mapping,protectedToken,tokenType};await s.put('identity',mapping,mapping.userId);}
     if(state.userId){const session=await s.get('session',state.sessionId),user=await s.get('user',state.userId);assert(session&&session.expires>Date.now()&&session.userId===state.userId&&user?.active,'Bitte erneut anmelden und den Anbieter verbinden.',401);assertPortalUser(user);checkWorkspace(user);const company=user.role==='partner'?await s.get('company',user.companyId):null,erasure=await s.get('account_erasure',user.id);assert(!session.pendingMfa&&Date.now()-Date.parse(session.createdAt)<15*60000&&user.verifiedAt&&(!erasure||Date.parse(user.createdAt)>Date.parse(erasure.deletedAt))&&(user.role!=='partner'||company&&company.status!=='suspended'),'Bitte erneut anmelden und den Anbieter verbinden.',401);assert(!mapping||mapping.userId===user.id,'Dieser Anbieter-Zugang ist bereits mit einem anderen Konto verbunden.',409);await s.put('identity',{id:key,provider:p,userId:user.id,...(protectedToken?{protectedToken,tokenType}:{}),createdAt:new Date().toISOString()},user.id);return {linked:true,redirect:user.role==='partner'?'/portal#einstellungen':'/gutachter-portal#einstellungen'};}
-    if(mapping){const user=await s.get('user',mapping.userId);assert(user?.verifiedAt,'Bitte zuerst deine E-Mail bestätigen.',401);return issueSession(s,user,null,{provider:p,idToken:result.id_token});}
+    if(mapping){const user=await s.get('user',mapping.userId);assert(user?.verifiedAt,'Bitte zuerst deine E-Mail bestätigen.',401);return issueSession(s,user,null,{provider:p,idToken:result.id_token,sid:identity.sid});}
     assert(identity.email_verified===true||identity.email_verified==='true','Deine E-Mail-Adresse muss beim Anbieter bestätigt sein.',401);const address=email(identity.email);
     // Existing accounts must explicitly link from an authenticated, recent session; never merge by email.
     if(await s.get('user',hash(address))||address===(env.PORTAL_ADMIN_EMAIL||'info@unfallx.com'))return {redirect:'/login?oauth=link_required'};
@@ -126,9 +128,9 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
      await s.put('identity',{id:key,provider:p,userId:user.id,...(protectedToken?{protectedToken,tokenType}:{}),createdAt:new Date().toISOString()},user.id);
      // Wie über das Formular: ein mitgegebener Empfehlungscode wird zugeordnet.
      if(company.referralCode)await referrals.attribute(s,user,company.referralCode);
-     return {...await issueSession(s,user,null,{provider:p,idToken:result.id_token}),registered:address};
+     return {...await issueSession(s,user,null,{provider:p,idToken:result.id_token,sid:identity.sid}),registered:address};
     }
-    const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,protectedToken,tokenType,email:address,idToken:result.id_token,name:contact,phone,company,csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};
+    const value=random();await s.put('oauth_pending',{id:hash(value),origin:requestOrigin(),identityId:key,provider:p,protectedToken,tokenType,email:address,idToken:result.id_token,sid:identity.sid,name:contact,phone,company,csrf:random(),expires:Date.now()+10*60000});return {pending:value,redirect:'/konto-vervollstaendigen'};
    });
    onVerified(p);
    // Dieselbe Begrüßung wie nach dem Formular. Ein fehlgeschlagener Versand
@@ -138,6 +140,28 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
    if(outcome.cookie)res.setHeader('Set-Cookie',[cookie(bindingName,'',0,true),outcome.cookie]);if(outcome.pending)res.setHeader('Set-Cookie',[cookie(bindingName,'',0,true),cookie(pendingName,outcome.pending)]);return redirect(res,outcome.redirect);
   }catch(e){console.error('OAuth callback failed:',p,e.code||e.status||'provider');if(nativeRequest&&nativeComplete)return nativeComplete(req,res,nativeRequest,{error:'provider_failed'});return redirect(res,'/login?oauth=failed');}
  }
+ // Back-Channel-Logout: 0account meldet sich ohne Browser, Cookies oder CSRF
+ // und nennt die endende Sitzung über die sid. Genau die hierzu gehörigen
+ // Sitzungen enden; Fehler antworten gemäß Spezifikation mit 400 und stören
+ // sonst nichts.
+ async function backchannel(req,res){
+  try{
+   assert(configured('0account'),'Anbieter nicht eingerichtet.',503);
+   assert((req.headers['content-type']||'').startsWith('application/x-www-form-urlencoded'),'Ungültige Rückmeldung.',415);
+   const data=Object.fromEntries(new URLSearchParams((await body(req,16000,true)).toString()));
+   assert(typeof data.logout_token==='string'&&data.logout_token.length<=8192,'Ungültige Rückmeldung.',400);
+   const {jwtVerify,createRemoteJWKSet}=await jose();
+   const address=settings('0account').keys;
+   if(!keysets.has(address))keysets.set(address,createRemoteJWKSet(new URL(address),{timeoutDuration:10000}));
+   const {payload}=await jwtVerify(data.logout_token,keysets.get(address),{issuer:settings('0account').issuer,audience:clientId('0account'),algorithms:['EdDSA'],clockTolerance:30,requiredClaims:['exp','iat','iss','aud','events','sid']});
+   // Spezifikation: ein Abmelde-Hinweis trägt niemals einen nonce.
+   assert(!('nonce'in payload),'Ungültige Rückmeldung.',400);
+   assert(payload.events&&typeof payload.events==='object'&&'http://schemas.openid.net/event/backchannel-logout'in payload.events,'Ungültige Rückmeldung.',400);
+   assert(typeof payload.sid==='string'&&payload.sid.length>0&&payload.sid.length<=64,'Ungültige Rückmeldung.',400);
+   await tx(async s=>{for(const session of await s.list('session'))if(session.idp?.provider==='0account'&&session.idp.sid===payload.sid)await s.remove('session',session.id);});
+   return {ok:true};
+  }catch(e){console.error('Back-channel logout failed:',e.code||e.status||'invalid');res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'invalid_request'}));return null;}
+ }
  async function begin(req,res,data,nativeRequest=null,nativeLink=null){
 const p=text(data.provider,20,true);assert(table[p]&&configured(p),'Diese Anmeldemethode wird noch eingerichtet.',503);const state=random(),binding=random(),nonce=random(),verifier=random();let actor=null;
    await tx(async s=>{await rate(s,'oauth-start:'+ip(req),20);if(data.link===true){if(nativeLink&&nativeRequest){const user=await s.get('user',nativeLink.userId),session=await s.get('session',nativeLink.sessionId),company=user&&await s.get('company',user.companyId);assert(user?.active&&user.verifiedAt&&user.role==='partner'&&session?.userId===user.id&&session.expires>Date.now()&&!session.pendingMfa&&company&&company.status!=='suspended','Bitte erneut anmelden.',401);checkWorkspace(user);actor={user,session};}else actor=await auth(req,s);assert(Date.now()-Date.parse(actor.session.createdAt)<15*60000,'Bitte für das Verknüpfen erneut anmelden (höchstens 15 Minuten).',401);}await s.put('oauth_state',{id:hash(state),origin:requestOrigin(),binding:hash(binding),nonce,verifier,provider:p,nativeRequest,userId:actor?.user.id||null,sessionId:actor?.session.id||null,expires:Date.now()+10*60000});});
@@ -145,12 +169,13 @@ const p=text(data.provider,20,true);assert(table[p]&&configured(p),'Diese Anmeld
  }
  async function route(path,req,res,url){
   const cb=path.match(/^\/oauth\/(0account|google|apple)\/callback$/);if(cb)return finish(req,res,url,cb[1]);
+  if(path===ZEROACCOUNT_BACKCHANNEL&&req.method==='POST')return backchannel(req,res);
   if(path==='/oauth/providers'&&req.method==='GET')return {providers:config()};
   if(path==='/oauth/start'&&req.method==='POST')return begin(req,res,await body(req));
   if(path==='/oauth/profile'&&req.method==='GET')return tx(async s=>{const r=await pending(req,s);return {email:r.email,name:r.name,phone:r.phone||'',company:r.company||{},provider:r.provider,csrf:r.csrf};});
   if(path==='/oauth/complete'&&req.method==='POST'){
    checkWorkspace({role:'partner'});const data=await body(req);assert(data.privacy===true&&data.terms===true,'Bitte Datenschutz und Nutzungsbedingungen bestätigen.');assert(data.typeOfAccount==='partner','Neue Zugänge sind ausschließlich für Partnerbetriebe vorgesehen.');const co=companyData(data),name=co.contact,phone=co.phone;
-   const result=await tx(async s=>{const r=await pending(req,s);assert(req.headers['x-csrf-token']===r.csrf,'Bitte die Seite neu laden.',403);assert(!await s.get('user',hash(r.email))&&!await s.get('identity',r.identityId),'Zu dieser Adresse besteht bereits ein Zugang. Bitte normal anmelden und den Anbieter in den Einstellungen verbinden.',409);const companyId=id();await s.put('company',{...co,id:companyId,email:r.email,status:'pending',createdAt:new Date().toISOString(),reviewNote:''});const user={id:hash(r.email),email:r.email,name,phone,role:'partner',companyId,active:true,verifiedAt:new Date().toISOString(),createdAt:new Date().toISOString(),termsVersion:'2026-09-09'};await s.put('user',user,companyId||'internal');await s.put('identity',{id:r.identityId,provider:r.provider,userId:user.id,...(r.protectedToken?{protectedToken:r.protectedToken,tokenType:r.tokenType}:{}),createdAt:new Date().toISOString()},user.id);if(data.referralCode)await referrals.attribute(s,user,text(data.referralCode,32).toUpperCase());await s.remove('oauth_pending',r.id);return {...await issueSession(s,user,null,{provider:r.provider,idToken:r.idToken}),email:r.email};});
+   const result=await tx(async s=>{const r=await pending(req,s);assert(req.headers['x-csrf-token']===r.csrf,'Bitte die Seite neu laden.',403);assert(!await s.get('user',hash(r.email))&&!await s.get('identity',r.identityId),'Zu dieser Adresse besteht bereits ein Zugang. Bitte normal anmelden und den Anbieter in den Einstellungen verbinden.',409);const companyId=id();await s.put('company',{...co,id:companyId,email:r.email,status:'pending',createdAt:new Date().toISOString(),reviewNote:''});const user={id:hash(r.email),email:r.email,name,phone,role:'partner',companyId,active:true,verifiedAt:new Date().toISOString(),createdAt:new Date().toISOString(),termsVersion:'2026-09-09'};await s.put('user',user,companyId||'internal');await s.put('identity',{id:r.identityId,provider:r.provider,userId:user.id,...(r.protectedToken?{protectedToken:r.protectedToken,tokenType:r.tokenType}:{}),createdAt:new Date().toISOString()},user.id);if(data.referralCode)await referrals.attribute(s,user,text(data.referralCode,32).toUpperCase());await s.remove('oauth_pending',r.id);return {...await issueSession(s,user,null,{provider:r.provider,idToken:r.idToken,sid:r.sid}),email:r.email};});
    res.setHeader('Set-Cookie',[cookie(pendingName,'',0),result.cookie]);const e=notice({title:'Willkommen bei UNFALLX Connect',copy:'Dein Partnerkonto ist angelegt. Wir prüfen jetzt deinen Betrieb und stimmen die Zusammenarbeit persönlich mit dir ab.',url:requestOrigin()+result.redirect,origin});try{await mail.send(result.email,e.subject,e.text,[],e.html);}catch{console.error('OAuth welcome notice: delivery unavailable');}return {redirect:result.redirect};
   }
   throw new Problem(404,'Nicht gefunden.');
@@ -164,4 +189,4 @@ const p=text(data.provider,20,true);assert(table[p]&&configured(p),'Diese Anmeld
  }
  return {route,config,begin,revoke};
 }
-module.exports={createOAuth,verifyIdentity,zeroaccount,ZEROACCOUNT_END_SESSION};
+module.exports={createOAuth,verifyIdentity,zeroaccount,ZEROACCOUNT_END_SESSION,ZEROACCOUNT_BACKCHANNEL};

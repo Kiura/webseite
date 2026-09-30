@@ -256,4 +256,45 @@ test('0account sessions carry the ID-token hint so their logout also ends the 0a
   assert.equal(plain.json.ok,true);assert.equal(plain.json.idpLogout,undefined);
  }finally{global.fetch=originalFetch;await h.close();}
 });
+test('Back-channel logout from 0account ends exactly the matching local sessions',async()=>{
+ const ISSUER='https://bcl-v1.0account.test',NS='https://0account.com/claims/fields',EVENT='http://schemas.openid.net/event/backchannel-logout';
+ const {generateKeyPair,exportJWK,SignJWT}=await import('jose'),pair=await generateKeyPair('Ed25519'),key=await exportJWK(pair.publicKey);key.kid='zeroaccount-bcl';key.alg='EdDSA';key.use='sig';
+ const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;
+ let nextJWT='',userinfo={};
+ global.fetch=async(input,options)=>{const url=String(input);
+  if(url===ISSUER+'/.well-known/jwks.json')return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
+  return originalFetch(input,options);};
+ const fields={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',termsAndConditions:true,privacyPolicy:true};
+ async function oauthSession(address,sid){userinfo={[NS]:fields};const start=await h.call('/oauth/start',{provider:'0account'});const url=new URL(start.json.redirect);nextJWT=await new SignJWT({sub:'sub-'+address,email:address,email_verified:true,given_name:'Erika',family_name:'Musterfrau',phone_number:'+4930123456',sid,nonce:url.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);return h.call('/oauth/0account/callback?state='+url.searchParams.get('state')+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});}
+ async function backchannel(claims,header={alg:'EdDSA',kid:key.kid}){const logoutToken=await new SignJWT(claims).setProtectedHeader(header).setIssuer(claims.iss||ISSUER).setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);return fetch(h.base+'/api/portal/oauth/0account/backchannel-logout',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Forwarded-For':'bcl'},body:new URLSearchParams({logout_token:logoutToken})});}
+ const sidSessions=sid=>h.store.transaction(async s=>(await s.list('session')).filter(x=>x.idp?.sid===sid).length);
+ try{
+  const first=await oauthSession('bcl-1@example.com','zero-session-A');
+  assert.equal(first.location,'/portal');
+  const second=await oauthSession('bcl-2@example.com','zero-session-B');
+  assert.equal(second.location,'/portal');
+  // Die sid der 0account-Sitzung hängt an den örtlichen Sitzungen.
+  assert.equal(await sidSessions('zero-session-A'),1);
+  assert.equal(await sidSessions('zero-session-B'),1);
+  const password=await h.register('bcl-pw@example.com');
+
+  // Der Abmeldehinweis endet genau die genannte Sitzung.
+  const ok=await backchannel({aud:'zero-client',sub:'sub-bcl-1@example.com',sid:'zero-session-A',events:{[EVENT]:{}}});
+  assert.equal(ok.status,200);
+  assert.equal(await sidSessions('zero-session-A'),0);
+  assert.equal(await sidSessions('zero-session-B'),1);
+  assert.ok(await h.store.transaction(s=>s.get('user',D.hash('bcl-pw@example.com'))));
+
+  // Ohne Ereignis, mit nonce, fremdem Aussteller oder fremdem Schlüssel: 400, nichts endet.
+  for(const claims of [{aud:'zero-client',sub:'sub',sid:'zero-session-B',events:{}},{aud:'zero-client',sub:'sub',sid:'zero-session-B',events:{[EVENT]:{}},nonce:'n'},{aud:'other-client',sub:'sub',sid:'zero-session-B',events:{[EVENT]:{}}}])assert.equal((await backchannel(claims)).status,400);
+  assert.equal(await sidSessions('zero-session-B'),1);
+
+  // Aber ein korrekter Hinweis für die zweite Sitzung endet auch sie.
+  assert.equal((await backchannel({aud:'zero-client',sub:'sub-bcl-2@example.com',sid:'zero-session-B',events:{[EVENT]:{}}})).status,200);
+  assert.equal(await sidSessions('zero-session-B'),0);
+ }finally{global.fetch=originalFetch;await h.close();}
+});
+
 test('Registration mail failure leaves no account or usable token; retry delivers one complete branded email',async()=>{const h=await harness();try{const data={email:'mail-failure@example.com',company:'Testbetrieb GmbH',contact:'Testpartner',street:'Teststraße 1',postcode:'10115',city:'Berlin',type:'Werkstatt',phone:'030123456',privacy:true,terms:true,password};h.fail(true);assert.equal((await h.call('/register',data)).status,503);assert.equal(await h.store.transaction(s=>s.get('user',D.hash(data.email))),null);assert.equal((await h.store.transaction(s=>s.list('token'))).length,0);h.fail(false);assert.equal((await h.call('/register',data)).status,200);assert.equal(h.messages.length,1);assert.match(h.messages[0].html,/data-unfallx-email="v2"/);assert.equal((h.messages[0].html.match(/cid:unfallx-logo/g)||[]).length,1);}finally{await h.close();}});
