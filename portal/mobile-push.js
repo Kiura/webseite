@@ -15,7 +15,7 @@ function eventKind(actor, c, event) {
 }
 function payload(row) {
   const copy = {requests: 'Eine Rückfrage wartet auf dich. Öffne den Fall in der App.', accepted: 'Ein Auftrag wurde angenommen. Den aktuellen Stand findest du in der App.', commission: 'Eine Provision wurde zur Auszahlung freigegeben. Details findest du in der App.'};
-  return {aps: {alert: {title: 'UNFALLX', body: copy[row.kind]}, sound: 'default'}, version: 1, caseID: row.caseId, kind: row.kind, recipient: row.recipient};
+  return {aps: {alert: {title: 'UNFALLX', body: row.target === 'chat' ? 'Eine neue Nachricht von UNFALLX wartet auf dich.' : copy[row.kind]}, sound: 'default'}, version: 1, caseID: row.caseId, kind: row.kind, recipient: row.recipient, ...(row.target === 'chat' ? {target: 'chat'} : {})};
 }
 function createAPNs(env, connect = http2.connect) {
   let key, cached;
@@ -95,7 +95,7 @@ function createMobilePush({env, tx, auth, body, rate, transport = createAPNs(env
       if (!user || user.companyId !== c.companyId) continue;
       const id = D.hash(event.id + ':' + device.id + ':' + kind);
       if (await s.get('push_notification', id)) continue;
-      const row = {id, apnsId: D.id(), deviceId: device.id, userId: user.id, sessionId: device.sessionId, recipient: recipient(user), caseId: c.id, kind, state: 'pending', attempts: 0, nextAttempt: Date.now(), expires: Date.now() + 86400000, createdAt: new Date().toISOString()};
+      const row = {id, apnsId: D.id(), deviceId: device.id, userId: user.id, sessionId: device.sessionId, recipient: recipient(user), caseId: c.id, kind, ...(event.action === 'Nachricht' ? {target: 'chat'} : {}), state: 'pending', attempts: 0, nextAttempt: Date.now(), expires: Date.now() + 86400000, createdAt: new Date().toISOString()};
       if (await valid(s, row)) await s.put('push_notification', row, user.id);
     }
   }
@@ -130,3 +130,4 @@ function createMobilePush({env, tx, auth, body, rate, transport = createAPNs(env
   return {route, event, flush};
 }
 module.exports = {createMobilePush, createAPNs, eventKind, payload, recipient};
+

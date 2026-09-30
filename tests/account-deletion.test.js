@@ -29,6 +29,7 @@ test('Partner deletion uses fresh proof, owner isolation, cancellation and actua
    await s.put('token',{id:D.hash(token),email:a.user.email,expires:Date.now()+60000},a.user.email);
    await s.put('password_token',{id:'password-token',userId:a.user.id,expires:Date.now()+60000},a.user.id);
    await s.put('identity',{id:'google-mapping',provider:'google',userId:a.user.id},a.user.id);
+   await s.put('chat_read',{id:'test-read',userId:a.user.id,sequence:1},a.user.id);
    await s.put('security',{id:a.user.id,mfaEnabled:false,phone:'test-only'},a.user.id);
   });
   const body={id:requestID,confirmed:true,reviewed:true,retained:'Keine personenbezogenen Geschäftsunterlagen vorhanden.'};
@@ -39,7 +40,7 @@ test('Partner deletion uses fresh proof, owner isolation, cancellation and actua
   assert.equal((await h.call('/me',undefined,b)).status,200);
   assert.equal((await h.call('/exchange',{token})).status,401);
   assert.equal((await h.call('/admin/account-deletions/complete',body,admin)).status,404);
-  await h.store.transaction(async s=>{assert.equal(await s.get('user',a.user.id),null);assert.equal(await s.get('company',a.company.id),null);for(const kind of ['identity','security','password_token','session'])assert.equal((await s.list(kind,a.user.id)).length,0);const r=await s.get('account_deletion',requestID);assert.equal(r.status,'completed');assert.equal(r.userId,undefined);assert.equal(r.email,undefined);});
+  await h.store.transaction(async s=>{assert.equal(await s.get('user',a.user.id),null);assert.equal(await s.get('company',a.company.id),null);for(const kind of ['identity','security','password_token','session','chat_read'])assert.equal((await s.list(kind,a.user.id)).length,0);const r=await s.get('account_deletion',requestID);assert.equal(r.status,'completed');assert.equal(r.userId,undefined);assert.equal(r.email,undefined);});
   await h.drain();assert.ok(h.messages.some(m=>m.to===a.user.email&&m.subject.includes('gelöscht')));
  }finally{await h.close();}
 });

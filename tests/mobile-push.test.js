@@ -57,3 +57,10 @@ test('APNs uses valid ES256 token, correct topic and minimal payload, never foll
  const parts=headers.authorization.slice(7).split('.');assert.deepEqual(JSON.parse(Buffer.from(parts[0],'base64url')),{alg:'ES256',kid:env.APNS_KEY_ID});assert.equal(JSON.parse(Buffer.from(parts[1],'base64url')).iss,env.APNS_TEAM_ID);assert.ok(crypto.verify('sha256',Buffer.from(parts.slice(0,2).join('.')),{key:pair.publicKey,dsaEncoding:'ieee-p1363'},Buffer.from(parts[2],'base64url')));
  assert.equal(createAPNs({...env,APNS_TOPIC:'wrong'}).ready,false);assert.equal(createAPNs({...env,APNS_PRIVATE_KEY:'invalid'}).ready,false);
 });
+
+test('Chat push opens the matching conversation and keeps message and attachments off the lock screen', async()=>{
+ const h=harness();await h.setup();await h.event('Nachricht',{note:'PRIVATE MESSAGE',fileIds:['private-document.pdf']});await h.push.flush();
+ assert.equal(h.sent.length,1);const p=h.sent[0].payload;
+ assert.equal(p.target,'chat');assert.equal(p.caseID,h.c.id);assert.equal(p.recipient,recipient(h.user));assert.equal(p.kind,'requests');
+ assert.equal(p.aps.alert.body,'Eine neue Nachricht von UNFALLX wartet auf dich.');assert.doesNotMatch(JSON.stringify(p),/PRIVATE|private-document/);
+});

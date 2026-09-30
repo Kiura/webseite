@@ -34,7 +34,7 @@ function createAccountDeletion({tx,rate,oauth,notifications}){
    const identities=await s.list('identity',u.id);
    D.assert(JSON.stringify(identities)===JSON.stringify(snapshot.identities),'Anmeldemethoden wurden inzwischen geändert. Bitte erneut prüfen.',409);
    const sessions=await s.list('session',u.id),sessionIds=new Set(sessions.map(x=>x.id));
-   for(const kind of ['session','identity','security','sms_challenge','sms_guard','security_event','password_token','referral_code','case_request'])for(const row of await s.list(kind,u.id))await s.remove(kind,row.id);
+   for(const kind of ['session','identity','security','sms_challenge','sms_guard','security_event','password_token','referral_code','case_request','chat_read'])for(const row of await s.list(kind,u.id))await s.remove(kind,row.id);
    for(const row of await s.list('token',u.email))await s.remove('token',row.id);
    for(const row of await s.list('oauth_pending'))if(row.email===u.email)await s.remove('oauth_pending',row.id);
    for(const row of await s.list('oauth_state'))if(row.userId===u.id)await s.remove('oauth_state',row.id);
