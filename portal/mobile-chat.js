@@ -8,9 +8,10 @@ function createMobileChat({tx,caseAccess,visible,audit,rate}) {
  const readKey=(u,c)=>D.hash(identity(u)+':'+c.id);
  async function route(path,req,user,data){
   if(path==='/mobile/chat/config'&&req.method==='GET')return tx(async s=>{await approved(s,user);return {version:1,audioAttachments:true,maxAttachments:6,maxBytes:25*1024*1024};});
-  if(path==='/mobile/chat/inbox'&&req.method==='GET')return tx(async s=>{
-   await approved(s,user);const conversations=[];let unreadCount=0;
-   for(const c of (await s.list('case',user.companyId)).filter(c=>visible(user,c))){
+  if(['/mobile/chat/inbox','/chat/inbox'].includes(path)&&req.method==='GET')return tx(async s=>{
+   if(path.startsWith('/mobile/')||user.role==='partner')await approved(s,user);else D.assert(['admin','appraiser'].includes(user.role),'Kein Portalzugang.',403);
+   const conversations=[];let unreadCount=0;
+   for(const c of (await s.list('case',user.role==='partner'?user.companyId:undefined)).filter(c=>visible(user,c))){
     const events=(await s.list('event',c.id)).filter(publicMessage).sort((a,b)=>a.at.localeCompare(b.at)||(a.sequence||0)-(b.sequence||0)||a.id.localeCompare(b.id));
     const latest=events.at(-1);if(!latest)continue;
     const read=await s.get('chat_read',readKey(user,c));

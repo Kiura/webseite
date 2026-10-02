@@ -67,6 +67,9 @@ test('chat crosses Admin, Web and native; protected original media, replay, unre
  assert.equal((await f.call('/cases/'+cid+'/messages','other',answer)).status,404);
  const latest=(await f.read(cid)).events.filter(e=>e.action==='Nachricht').at(-1);assert.equal((await f.call('/cases/'+cid+'/messages/read','partner',{throughEventId:latest.id})).status,200);assert.equal((await f.call('/mobile/chat/inbox')).json().unreadCount,0);
  await f.call('/cases/'+cid+'/messages/read','partner',{throughEventId:answerResponse.json().id});assert.equal((await f.call('/mobile/chat/inbox')).json().unreadCount,0);
+ const webInbox=(await f.call('/chat/inbox','admin')).json();assert.equal(webInbox.messages.length,1);assert.equal(webInbox.messages[0].caseId,cid);assert.equal(webInbox.unreadCount,2);
+ assert.equal((await f.call('/chat/inbox','appraiser')).json().messages.length,1);assert.equal((await f.call('/chat/inbox','unassigned')).json().messages.length,0);assert.equal((await f.call('/chat/inbox','other')).json().messages.length,0);assert.equal((await f.call('/chat/inbox',null)).status,401);
+ await f.call('/cases/'+cid+'/messages/read','admin',{throughEventId:latest.id});assert.equal((await f.call('/chat/inbox','admin')).json().unreadCount,0);
  const rows=(await f.call('/messages','admin')).json().messages;assert(rows.some(r=>r.attachmentCount===1));
  await f.store.transaction(s=>s.put('company',{id:f.users.partner.companyId,status:'suspended'}));assert.equal((await f.call('/files/'+file.id,'partner')).status,403);assert.equal((await f.call('/cases/'+cid+'/messages','partner',message)).status,403);
 });

@@ -3,15 +3,16 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 
 function fixture({dirty=false,pending=false,role='admin'}={}){
  const calls=[],refreshed=[],nodes=new Map(),caseData={id:'test-case',version:7,intake:{vehicle:'Testwagen'}};
- const node=()=>({innerHTML:'',textContent:'',classList:{toggle(){}},scrollIntoView(){},querySelector(){return null;},querySelectorAll(){return[];}});
+ const node=()=>({innerHTML:'',textContent:'',value:'',addEventListener(){},classList:{toggle(){}},scrollIntoView(){},querySelector(){return null;},querySelectorAll(){return[];}});
  const find=selector=>{
   if(selector==='form[data-dirty="true"] [data-intake-fields]')return dirty?{}:null;
   if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);
  };
+ const ws={window:{}};vm.runInNewContext(fs.readFileSync(require.resolve('../assets/workspace-ui'),'utf8'),ws);
  const sandbox={UnfallxSessionGuard:require('../assets/session-guard'),AbortController,AbortSignal,setInterval:()=>0,clearInterval(){},Intl,Date,URL,File:class{},FormData:class{constructor(form){this.entries=Object.entries(form.data||{});}[Symbol.iterator](){return this.entries[Symbol.iterator]();}},
-  document:{querySelector:find},window:{addEventListener(){},UnfallxWorkspace:{icon:()=>''}},location:{hash:'#nachrichten'},
+  document:{querySelector:find},window:{addEventListener(){},UnfallxWorkspace:ws.window.UnfallxWorkspace},location:{hash:'#nachrichten'},
   UnfallxHelp:{contextual:()=> 'nachrichten'},UnfallxIntake:{errors:()=>[],fileErrors:()=>[]},
-  fetch:async(url,options)=>{calls.push({url,...options});return {ok:true,json:async()=>url.endsWith('/messages')?{messages:[{caseId:'case-123',caseNumber:'UX-TEST',vehicle:'Testwagen',note:'Nachfrage <test>',actor:'Partner',at:'2026-09-12T12:00:00Z'}]}:{case:caseData}};},
+  fetch:async(url,options)=>{calls.push({url,...options});return {ok:true,json:async()=>url.endsWith('/chat/inbox')?{messages:[{caseId:'case-123',caseNumber:'UX-TEST',vehicle:'Testwagen',note:'Nachfrage <test>',actor:'Partner',at:'2026-09-12T12:00:00Z'}]}:url.endsWith('/cases')?{cases:[{id:'case-123',number:'UX-TEST',intake:{vehicle:'Testwagen'}}]}:{case:caseData}};},
   seed:{user:{role,preferences:{}}},fixturePending:pending,onRefresh:cid=>refreshed.push(cid),caseData
  };
  // Run the real case-action handlers, omitting only page boot and its global listeners.
@@ -38,7 +39,7 @@ test('pending uploads block status changes and dispatch; clean case actions cont
  const clean=fixture();await clean.run('status',{status:'in_progress'});await clean.run('comment',{note:'Geprüft'});await clean.dispatch();
  assert.equal(clean.calls.length,3);assert.equal(clean.calls[2].url,'/api/portal/cases/test-case/dispatch');assert.equal(JSON.parse(clean.calls[2].body).version,7);assert.deepEqual(clean.refreshed,['test-case','test-case','test-case']);
 });
-test('message centre links to the case message tab and escapes message text',async()=>{
- const f=fixture();await f.messages();const html=f.nodes.get('#portal-root').innerHTML;
- assert.match(html,/href="#fall\/case-123\/messages"/);assert.match(html,/Nachfrage &lt;test&gt;/);assert.doesNotMatch(html,/<test>/);
+test('chat centre links to a dedicated case conversation and escapes message text',async()=>{
+ const f=fixture();await f.messages();const html=f.nodes.get('#chat-conversations').innerHTML;
+ assert.match(html,/href="#chat\/case-123"/);assert.match(html,/Nachfrage &lt;test&gt;/);assert.doesNotMatch(html,/<test>/);
 });

@@ -43,3 +43,13 @@ test('Gallery exposes removable annotated copies beside originals without render
  const html=scope.window.UnfallxWorkspace.photos([{id:original,kind:'photo',type:'image/jpeg',name:'Original',size:123,canDelete:false},{id:marked,kind:'photo_annotation',type:'image/jpeg',name:'Markierung',size:124,canDelete:true},{id:trashed,kind:'photo_annotation',name:'Entfernt',deletedAt:'2026-10-02'}]);
  assert(html.includes('Originalfoto'));assert(html.includes('Markierte Kopie'));assert(html.includes('data-case-photo="'+marked+'"'));assert(html.includes('data-file-delete="'+marked+'"'));assert(!html.includes('data-file-delete="'+original+'"'));assert(!html.includes(trashed));
 });
+
+
+test('Plate and chat rendering escape input, preserve originals and group one latest conversation per case',()=>{
+ const scope={window:{}};vm.runInNewContext(fs.readFileSync(require.resolve('../assets/workspace-ui'),'utf8'),scope);const W=scope.window.UnfallxWorkspace;
+ const value='  b  ux 1234  ';assert(W.plate(value).includes('B UX 1234'));assert.equal(value,'  b  ux 1234  ');assert(W.plate('').includes('Kennzeichen offen'));assert(!W.plate('<img src=x>').includes('<img'));
+ const cases=[{id:'one',number:'UX1',companyName:'<Partner>',intake:{plate:'B UX 1'}},{id:'two',number:'UX2',intake:{plate:''}}];
+ const rows=W.conversations(cases,[{caseId:'one',note:'old',at:'2026-10-01'},{caseId:'one',note:'<latest>',at:'2026-10-02',unread:2},{caseId:'foreign',note:'HIDDEN',at:'2026-10-03'}]);
+ assert.equal(rows.length,2);assert.equal(rows[0].message.note,'<latest>');const html=W.chatList(rows,false);assert(html.includes('&lt;Partner&gt;'));assert(html.includes('&lt;latest&gt;'));assert(!html.includes('HIDDEN'));assert.equal((html.match(/href="#chat\/one"/g)||[]).length,1);assert(html.includes('2 ungelesene Nachrichten'));
+ const history=W.messages([{actorId:'self',actor:'Me',action:'Nachricht',note:'OWN',at:'2026-10-02'},{actorId:'other',actor:'Other',action:'Nachricht',note:'RECEIVED',at:'2026-10-02'}],[],'self');assert.equal((history.match(/is-own/g)||[]).length,1);
+});
