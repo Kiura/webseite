@@ -20,7 +20,7 @@ test('Push opt-in validates devices, preferences, environment and partner approv
  await assert.rejects(h.register(h.device,{...h.actor,user:{...h.user,role:'admin'}}),{status:403});
  await h.s.put('company',{id:h.user.companyId,status:'pending'});await assert.rejects(h.register(),{status:403});
  await h.register({...h.device,enabled:false});assert.equal((await h.s.list('push_device'))[0].active,false);
- h.transport.ready=false;assert.deepEqual(await h.push.route('/mobile/push/config',{method:'GET',actor:h.actor}),{version:1,enabled:false});
+ h.transport.ready=false;assert.deepEqual(await h.push.route('/mobile/push/config',{method:'GET',actor:h.actor}),{version:1,enabled:false,quietHours:true});
 });
 test('Only relevant external events are queued once, with private lock-screen payloads',async()=>{
  const h=harness();await h.setup();const e={id:D.id(),action:'Status: Angenommen',note:'CUSTOMER SECRET'};
@@ -63,4 +63,19 @@ test('Chat push opens the matching conversation and keeps message and attachment
  assert.equal(h.sent.length,1);const p=h.sent[0].payload;
  assert.equal(p.target,'chat');assert.equal(p.caseID,h.c.id);assert.equal(p.recipient,recipient(h.user));assert.equal(p.kind,'requests');
  assert.equal(p.aps.alert.body,'Eine neue Nachricht von UNFALLX wartet auf dich.');assert.doesNotMatch(JSON.stringify(p),/PRIVATE|private-document/);
+});
+
+test('Quiet hours defer without consuming attempts and recheck logout before delivery',async()=>{
+ const realNow=Date.now;let now=Date.parse('2026-09-30T21:00:00Z');Date.now=()=>now;
+ try {
+  const h=harness();await h.setup();h.session.expires=now+24*3600000;await h.s.put('session',h.session);
+  const quietHours={enabled:true,startMinute:1320,endMinute:420,timeZone:'Europe/Berlin'};
+  assert.equal((await h.register({...h.device,quietHours})).quietHoursAccepted,true);
+  await h.event();await h.push.flush();let row=(await h.s.list('push_notification'))[0];
+  assert.equal(h.sent.length,0);assert.equal(row.state,'pending');assert.equal(row.attempts,0);assert.equal(row.nextAttempt,Date.parse('2026-10-01T05:00:00Z'));
+  now=row.nextAttempt;await h.push.flush();assert.equal(h.sent.length,1);
+  now=Date.parse('2026-10-01T21:00:00Z');h.session.expires=now+24*3600000;await h.s.put('session',h.session);
+  await h.event();await h.push.flush();await h.s.remove('session',h.session.id);now=Date.parse('2026-10-02T05:00:00Z');await h.push.flush();assert.equal(h.sent.length,1);
+  await assert.rejects(h.register({...h.device,quietHours:{...quietHours,endMinute:1320}}),{status:400});
+ }finally{Date.now=realNow;}
 });

@@ -2,6 +2,7 @@
 const http2 = require('node:http2');
 const crypto = require('node:crypto');
 const D = require('./domain');
+const {quietDefault,validQuietHours,quietUntil}=require('./mobile-media');
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const kinds = ['requests', 'accepted', 'commission'];
 const topic = 'de.schadenakte.ios';
@@ -67,7 +68,7 @@ function createMobilePush({env, tx, auth, body, rate, transport = createAPNs(env
   async function route(path, req) {
     const actor = await tx(s => auth(req, s));
     D.assert(actor.user.role === 'partner', 'Nur für Partnerzugänge.', 403);
-    if (path === '/mobile/push/config' && req.method === 'GET') return {version: 1, enabled: transport.ready};
+    if (path === '/mobile/push/config' && req.method === 'GET') return {version: 1, enabled: transport.ready, quietHours: true};
     D.assert(path === '/mobile/push/device' && req.method === 'POST', 'Nicht gefunden.', 404);
     const data = await body(req);
     D.assert(uuid.test(data.installationId || ''), 'Ungültiges Gerät.');
@@ -81,10 +82,12 @@ function createMobilePush({env, tx, auth, body, rate, transport = createAPNs(env
       D.assert(typeof data.token === 'string' && /^[a-f0-9]{32,512}$/.test(data.token) && data.token.length % 2 === 0, 'Ungültiger Gerätetoken.');
       D.assert(data.environment === 'production' || data.environment === 'sandbox' && env.APNS_ALLOW_SANDBOX === 'true', 'Diese Push-Umgebung ist nicht freigeschaltet.');
       D.assert(data.preferences && kinds.every(k => typeof data.preferences[k] === 'boolean'), 'Bitte Benachrichtigungen auswählen.');
+      const quietHours=data.quietHours===undefined?(old?.userId===user.id?old.quietHours:null)||quietDefault():data.quietHours;
+      D.assert(validQuietHours(quietHours),'Ungültige Ruhezeiten.');
       // A token can belong to only one current account/installation. Never keep an old recipient.
       for (const other of await s.list('push_device')) if (other.id !== id && other.token === data.token && other.environment === data.environment) { other.active = false; await s.put('push_device', other, other.userId); }
-      await s.put('push_device', {id, userId: user.id, sessionId: session.id, recipient: recipient(user), token: data.token, environment: data.environment, preferences: Object.fromEntries(kinds.map(k => [k, data.preferences[k]])), active: true, updatedAt: new Date().toISOString()}, user.id);
-      return {ok: true, enabled: true};
+      await s.put('push_device', {id, userId: user.id, sessionId: session.id, recipient: recipient(user), token: data.token, environment: data.environment, preferences: Object.fromEntries(kinds.map(k => [k, data.preferences[k]])), quietHours: {enabled:quietHours.enabled,startMinute:quietHours.startMinute,endMinute:quietHours.endMinute,timeZone:quietHours.timeZone}, active: true, updatedAt: new Date().toISOString()}, user.id);
+      return {ok: true, enabled: true, quietHoursAccepted: true};
     });
   }
   async function event(s, actor, c, event) {
@@ -111,6 +114,8 @@ function createMobilePush({env, tx, auth, body, rate, transport = createAPNs(env
         const row = all.find(r => r.state === 'pending' && r.expires > Date.now() && r.nextAttempt <= Date.now()); if (!row) return null;
         const device = await valid(s, row);
         if (!device) { row.state = 'cancelled'; await s.put('push_notification', row, row.userId); return {skip: true}; }
+        const until=quietUntil(device.quietHours);
+        if(until){row.nextAttempt=until;row.expires=Math.max(row.expires,Math.min(until+3600000,Date.parse(row.createdAt)+48*3600000));await s.put('push_notification',row,row.userId);return {skip:true};}
         row.state = 'sending'; row.claimedAt = Date.now(); row.attempts++; await s.put('push_notification', row, row.userId); return {row, device};
       });
       if (!job) break; if (job.skip) continue;

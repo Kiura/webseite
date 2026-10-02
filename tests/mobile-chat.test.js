@@ -27,6 +27,17 @@ test('Durable chat HTTP: PDF upload, replay, unread and tenant isolation',async 
    const events=[{id:D.id(),actorId:'admin',sequence:100},{id:D.id(),actorId:'admin',sequence:101},{id:D.id(),actorId:'admin',sequence:102,internal:true}];await store.transaction(async s=>{for(const e of events)await s.put('event',{actor:'UNFALLX',action:'Nachricht',note:'Antwort',at:new Date().toISOString(),caseId,...e},caseId);});
    assert.equal((await call('/mobile/chat/inbox')).json.unreadCount,2);assert.equal((await call('/cases/'+caseId+'/messages/read',{throughEventId:events[0].id})).status,200);assert.equal((await call('/mobile/chat/inbox')).json.unreadCount,1);assert.equal((await call('/cases/'+caseId+'/messages/read',{throughEventId:events[2].id})).status,404);await call('/cases/'+caseId+'/messages/read',{throughEventId:events[1].id});await call('/cases/'+caseId+'/messages/read',{throughEventId:events[0].id});assert.equal((await call('/mobile/chat/inbox')).json.unreadCount,0);
   });
+  await t.test('Audio preserves original bytes, requires chat scope, and rejects spoofed WAV',async()=>{
+   assert.equal((await call('/mobile/chat/inbox')).json.audioAttachments,true);
+   const bytes=Buffer.alloc(44+32000);bytes.write('RIFF');bytes.writeUInt32LE(bytes.length-8,4);bytes.write('WAVE',8);bytes.write('fmt ',12);bytes.writeUInt32LE(16,16);bytes.writeUInt16LE(1,20);bytes.writeUInt16LE(1,22);bytes.writeUInt32LE(16000,24);bytes.writeUInt32LE(32000,28);bytes.writeUInt16LE(2,32);bytes.writeUInt16LE(16,34);bytes.write('data',36);bytes.writeUInt32LE(32000,40);
+   const headers={'Content-Type':'audio/wav','X-File-Kind':'document','X-File-Name':'Voice.wav','X-Chat-Attachment':'1'};
+   const response=await call('/cases/'+caseId+'/files',bytes,headers);assert.equal(response.status,200,JSON.stringify(response.json));assert.equal(response.json.file.sha256,D.hash(bytes));
+   const audioJob={clientMessageId:D.id(),note:'',fileIds:[response.json.file.id]};assert.equal((await call('/cases/'+caseId+'/messages',audioJob)).status,200);
+   assert.equal((await call('/cases/'+caseId+'/files',bytes,{...headers,'X-Chat-Attachment':'0'})).status,415);
+   assert.equal((await call('/cases/'+caseId+'/files',Buffer.from('<script>bad</script>'),headers)).status,415);
+   assert.equal((await call('/cases/'+otherCase+'/files',bytes,headers)).status,404);
+   const downloaded=await fetch('http://127.0.0.1:'+server.address().port+'/api/portal/files/'+response.json.file.id,{headers:{Cookie:'ux_session='+secret}});assert.equal(downloaded.status,200);assert.equal(downloaded.headers.get('content-type'),'audio/wav');assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()),bytes);
+  });
   await t.test('Suspension immediately blocks reads and replay',async()=>{await store.transaction(s=>s.put('company',{id:companyId,status:'suspended'}));assert.equal((await call('/mobile/chat/inbox')).status,403);assert.equal((await call('/cases/'+caseId+'/messages',job)).status,403);});
  } finally {await new Promise(r=>server.close(r));await portal.close();fs.rmSync(dir,{recursive:true,force:true});}
 });

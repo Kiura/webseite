@@ -13,3 +13,10 @@ test('signed uploads are restricted to documented Frankfurt buckets and ownershi
 test('native app claimant fields reach autoiXpert structured fields without inventing consent',()=>{
  const p=payload({id:'native',intake:{plate:'B TEST'},mobile:{fields:{'claimant.first':'Alex','claimant.last':'Test','claimant.email':'alex@example.test','claimant.street':'Teststraße 2','claimant.iban':'TEST-IBAN'}}},'assessor');assert.equal(p.claimant.first_name,'Alex');assert.equal(p.claimant.email,'alex@example.test');assert.equal(p.claimant.iban,'TEST-IBAN');assert(!p.claimant.notes.includes('berechtigt. Die betroffenen Personen'));
 });
+
+test('chat, audio, payout evidence and marked copies never enter a new autoiXpert export',async t=>{
+ const log=[],{adapter,tx}=await fixture(t,transport(log));
+ await tx(async s=>{for(const f of [{id:'chat',kind:'document',type:'application/pdf',chatAttachment:true},{id:'audio',kind:'document',type:'audio/wav',chatAttachment:true},{id:'payout',kind:'payout_receipt',type:'application/pdf'},{id:'marked',kind:'photo_annotation',type:'image/jpeg'}])await s.put('file',{...f,caseId:CID,name:'NOT FOR EXPORT'},CID);});
+ await adapter.step(internal,CID,{reviewed:true,confirmed:true,version:2});
+ const job=await tx(s=>s.get('autoixpert_export',CID));assert.deepEqual(job.files.map(f=>f.id),['file']);
+});
