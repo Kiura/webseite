@@ -17,7 +17,7 @@ function fixture({dirty=false,pending=false,role='admin'}={}){
  };
  // Run the real case-action handlers, omitting only page boot and its global listeners.
  const source=fs.readFileSync(require.resolve('../assets/portal'),'utf8'),end=source.indexOf("$('#portal-search').addEventListener('submit'");assert(end>0);
- vm.runInNewContext(source.slice(0,end)+`me=seed;csrf='test-csrf';current={case:caseData,files:[]};activeUpload={batch:{pending:()=>fixturePending}};detail=async cid=>onRefresh(cid);globalThis.actions={applyCaseAction,dispatchCase,messageCentre};})();`,sandbox);
+ vm.runInNewContext(source.slice(0,end)+`me=seed;csrf='test-csrf';current={case:caseData,files:[]};activeUpload={batch:{pending:()=>fixturePending},destroy(){}};detail=async cid=>onRefresh(cid);globalThis.actions={applyCaseAction,dispatchCase,messageCentre};})();`,sandbox);
  const form=(action,data={})=>({dataset:{caseAction:action},data,querySelector:()=>null,querySelectorAll:()=>[]});
  return {calls,refreshed,nodes,run:(action,data)=>sandbox.actions.applyCaseAction(form(action,data),caseData.id,caseData,{dataset:{dirty:String(dirty)}}),dispatch:()=>sandbox.actions.dispatchCase(caseData.id,{fileId:'report',confirmed:true}),messages:()=>sandbox.actions.messageCentre()};
 }

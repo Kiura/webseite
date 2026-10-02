@@ -3,13 +3,13 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),vm=requir
 function fixture({loseAck=false,badReceipt=false}={}){
  const cid=crypto.randomUUID(),fileId=crypto.randomUUID(),eventId=crypto.randomUUID(),calls=[],notes=[],refreshes=[],nodes=new Map();let uploads=0;
  function node(){return {handlers:{},children:[],disabled:false,dataset:{},classList:{toggle(){}},addEventListener(k,fn){this.handlers[k]=fn;},setAttribute(){},replaceChildren(){this.children=[];},append(...children){this.children.push(...children);},scrollIntoView(){}};}
- const form=node();form.elements={note:{value:'Bitte diese Unterlage prüfen',readOnly:false}};form.querySelector=s=>{if(!nodes.has(s))nodes.set(s,node());return nodes.get(s);};
+ const form=node();form.elements={note:{...node(),value:'Bitte diese Unterlage prüfen',readOnly:false}};form.requestSubmit=()=>{form.submitPromise=form.handlers.submit({preventDefault(){}})};form.querySelector=s=>{if(!nodes.has(s))nodes.set(s,node());return nodes.get(s);};
  const doc={querySelector:s=>s==='#case-message'?form:s.includes('data-dirty')?null:node(),querySelectorAll:()=>[],createElement:node};
- const scope={Intl,Date,File,URL,crypto:crypto.webcrypto,AbortController,AbortSignal,setTimeout,clearTimeout,setInterval:()=>0,clearInterval(){},document:doc,window:{addEventListener(){},UnfallxWorkspace:{}},location:{hash:'#fall/'+cid+'/messages'},UnfallxSessionGuard:require('../assets/session-guard'),UnfallxUploads:{...require('../assets/uploads'),bindDropZone:()=>{}},cid,
+ const scope={matchMedia:()=>({matches:true}),Intl,Date,File,URL,crypto:crypto.webcrypto,AbortController,AbortSignal,setTimeout,clearTimeout,setInterval:()=>0,clearInterval(){},document:doc,window:{addEventListener(){},UnfallxWorkspace:{}},location:{hash:'#fall/'+cid+'/messages'},UnfallxSessionGuard:require('../assets/session-guard'),UnfallxUploads:{...require('../assets/uploads'),bindDropZone:()=>{}},cid,
   refresh:id=>refreshes.push(id),log:(text)=>notes.push(text),post:async(path,method,data)=>{calls.push({path,method,data:structuredClone(data)});if(loseAck&&calls.length===1)throw Error('Lost response');return {ok:true,id:eventId,caseId:cid,clientMessageId:data.clientMessageId};},upload:async(id,item)=>{uploads++;return {file:{id:fileId,caseId:cid,chatAttachment:true,size:item.file.size,sha256:badReceipt?'wrong':crypto.createHash('sha256').update(Buffer.from(await item.file.arrayBuffer())).digest('hex')}};}};
  const src=fs.readFileSync(require.resolve('../assets/portal'),'utf8'),end=src.indexOf("$('#portal-search').addEventListener('submit'");
- vm.runInNewContext(src.slice(0,end)+`me={user:{role:'admin',preferences:{}}};current={case:{id:cid,version:1},files:[]};api=post;uploadOriginal=upload;detail=refresh;message=log;bindChatComposer(cid);globalThis.controls={state:activeChat,unsent:unsentChat,guard:requireSavedCaseData,rebind:saved=>{bindChatComposer(cid,saved);return activeChat}};})();`,scope);
- return {calls,notes,refreshes,form,nodes,cid,get uploads(){return uploads;},state:scope.controls.state,guard:scope.controls.guard,rebind:scope.controls.rebind,unsent:scope.controls.unsent,submit:()=>form.handlers.submit({preventDefault(){}})};
+ vm.runInNewContext(src.slice(0,end)+`me={user:{role:'admin',preferences:{}}};current={case:{id:cid,version:1},files:[]};api=post;uploadOriginal=upload;detail=refresh;message=log;bindChatComposer(cid);globalThis.controls={state:activeChat,unsent:unsentChat,stash:rememberChat,clear:clearFileViews,draft:id=>chatDrafts.get(id),guard:requireSavedCaseData,rebind:saved=>{bindChatComposer(cid,saved);return activeChat}};})();`,scope);
+ return {calls,notes,refreshes,form,nodes,cid,get uploads(){return uploads;},state:scope.controls.state,stash:scope.controls.stash,clear:scope.controls.clear,draft:scope.controls.draft,guard:scope.controls.guard,rebind:scope.controls.rebind,unsent:scope.controls.unsent,submit:()=>form.handlers.submit({preventDefault(){}})};
 }
 test('Web chat retries the identical message after lost acknowledgement and never uploads its original twice',async()=>{
  const f=fixture({loseAck:true});f.state.batch.add([new File(['%PDF-1.4 TEST %%EOF'],'test.pdf')],'document');
@@ -52,4 +52,26 @@ test('Plate and chat rendering escape input, preserve originals and group one la
  const rows=W.conversations(cases,[{caseId:'one',note:'old',at:'2026-10-01'},{caseId:'one',note:'<latest>',at:'2026-10-02',unread:2},{caseId:'foreign',note:'HIDDEN',at:'2026-10-03'}]);
  assert.equal(rows.length,2);assert.equal(rows[0].message.note,'<latest>');const html=W.chatList(rows,false);assert(html.includes('&lt;Partner&gt;'));assert(html.includes('&lt;latest&gt;'));assert(!html.includes('HIDDEN'));assert.equal((html.match(/href="#chat\/one"/g)||[]).length,1);assert(html.includes('2 ungelesene Nachrichten'));
  const history=W.messages([{actorId:'self',actor:'Me',action:'Nachricht',note:'OWN',at:'2026-10-02'},{actorId:'other',actor:'Other',action:'Nachricht',note:'RECEIVED',at:'2026-10-02'}],[],'self');assert.equal((history.match(/is-own/g)||[]).length,1);
+});
+
+
+test('Messenger preserves text, selected originals and retry identity between conversations in memory',()=>{
+ const f=fixture();f.state.batch.add([new File(['ORIGINAL'],'Anhang.pdf',{type:'application/pdf'})],'document');f.stash();
+ const saved=f.draft(f.cid);assert.equal(saved.note,'Bitte diese Unterlage prüfen');assert.equal(saved.batch.items[0].file.name,'Anhang.pdf');
+ f.clear();f.form.elements.note.value='';const restored=f.rebind(saved);assert.equal(restored.batch,saved.batch);assert.equal(f.form.elements.note.value,saved.note);
+ restored.batch.remove(restored.batch.items[0].key,true);f.form.elements.note.value='';f.stash();assert.equal(f.draft(f.cid),undefined);
+});
+
+test('Messenger Enter sends, Shift+Enter and IME composition do not send prematurely',async()=>{
+ const f=fixture();let prevented=0;const press=(overrides={})=>f.form.elements.note.handlers.keydown({key:'Enter',shiftKey:false,isComposing:false,preventDefault(){prevented++;},...overrides});
+ press({shiftKey:true});press({isComposing:true});assert.equal(f.calls.length,0);assert.equal(prevented,0);
+ press();await f.form.submitPromise;assert.equal(f.calls.length,1);assert.equal(prevented,1);assert.equal(f.calls[0].data.note,'Bitte diese Unterlage prüfen');
+});
+
+test('Messenger groups dates and shows selection, drafts and unread state without claiming read receipts',()=>{
+ const scope={window:{}};vm.runInNewContext(fs.readFileSync(require.resolve('../assets/workspace-ui'),'utf8'),scope);const W=scope.window.UnfallxWorkspace;
+ const rows=W.conversations([{id:'a',number:'UX-A',companyName:'Partner A',intake:{plate:'B UX 1'}}],[{caseId:'a',at:'2026-09-10T12:00:00Z',note:'Foto angekommen',unread:2}]);
+ const list=W.chatList(rows,false,'a',['a']);assert(list.includes('aria-current="true"'));assert(list.includes('Entwurf'));assert(list.includes('2 ungelesene Nachrichten'));
+ const html=W.messages([{id:'a',action:'Nachricht',actorId:'me',actor:'Ich',at:'2026-09-10T12:00:00Z',note:'Zeile 1\nZeile 2'},{id:'b',action:'Nachricht',actorId:'other',actor:'Partner',at:'2026-09-10T13:00:00Z',note:'Antwort'},{id:'c',action:'Nachricht',actorId:'other',actor:'Partner',at:'2026-09-11T13:00:00Z',note:'Zweiter Tag'}],[],'me');
+ assert.equal((html.match(/class="ws-chat-day"/g)||[]).length,2);assert(html.includes('Zeile 1\nZeile 2'));assert(html.includes('aria-label="Gesendet"'));assert(!html.includes('aria-label="Gelesen"'));
 });
