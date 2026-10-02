@@ -4,22 +4,23 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 function fixture({dirty=false,pending=false,role='admin'}={}){
  const calls=[],refreshed=[],nodes=new Map(),caseData={id:'test-case',version:7,intake:{vehicle:'Testwagen'}};
  const node=()=>({innerHTML:'',textContent:'',value:'',addEventListener(){},classList:{toggle(){}},scrollIntoView(){},querySelector(){return null;},querySelectorAll(){return[];}});
+ const chatBadge={dataset:{navCount:'chat'},hidden:true,textContent:'',setAttribute(){}};
  const find=selector=>{
   if(selector==='form[data-dirty="true"] [data-intake-fields]')return dirty?{}:null;
   if(!nodes.has(selector))nodes.set(selector,node());return nodes.get(selector);
  };
  const ws={window:{}};vm.runInNewContext(fs.readFileSync(require.resolve('../assets/workspace-ui'),'utf8'),ws);
  const sandbox={UnfallxSessionGuard:require('../assets/session-guard'),AbortController,AbortSignal,setInterval:()=>0,clearInterval(){},Intl,Date,URL,File:class{},FormData:class{constructor(form){this.entries=Object.entries(form.data||{});}[Symbol.iterator](){return this.entries[Symbol.iterator]();}},
-  document:{querySelector:find},window:{addEventListener(){},UnfallxWorkspace:ws.window.UnfallxWorkspace},location:{hash:'#nachrichten'},
+  document:{querySelector:find,querySelectorAll:selector=>selector==='[data-nav-count]'?[chatBadge]:[]},window:{addEventListener(){},UnfallxWorkspace:ws.window.UnfallxWorkspace},location:{hash:'#nachrichten'},
   UnfallxHelp:{contextual:()=> 'nachrichten'},UnfallxIntake:{errors:()=>[],fileErrors:()=>[]},
-  fetch:async(url,options)=>{calls.push({url,...options});return {ok:true,json:async()=>url.endsWith('/chat/inbox')?{messages:[{caseId:'case-123',caseNumber:'UX-TEST',vehicle:'Testwagen',note:'Nachfrage <test>',actor:'Partner',at:'2026-09-12T12:00:00Z'}]}:url.endsWith('/cases')?{cases:[{id:'case-123',number:'UX-TEST',intake:{vehicle:'Testwagen'}}]}:{case:caseData}};},
+  fetch:async(url,options)=>{calls.push({url,...options});return {ok:true,json:async()=>url.endsWith('/chat/inbox')?{messages:[{caseId:'case-123',caseNumber:'UX-TEST',vehicle:'Testwagen',note:'Nachfrage <test>',unread:2,actor:'Partner',at:'2026-09-12T12:00:00Z'}]}:url.endsWith('/cases')?{cases:[{id:'case-123',number:'UX-TEST',intake:{vehicle:'Testwagen'}}]}:{case:caseData}};},
   seed:{user:{role,preferences:{}}},fixturePending:pending,onRefresh:cid=>refreshed.push(cid),caseData
  };
  // Run the real case-action handlers, omitting only page boot and its global listeners.
  const source=fs.readFileSync(require.resolve('../assets/portal'),'utf8'),end=source.indexOf("$('#portal-search').addEventListener('submit'");assert(end>0);
  vm.runInNewContext(source.slice(0,end)+`me=seed;csrf='test-csrf';current={case:caseData,files:[]};activeUpload={batch:{pending:()=>fixturePending},destroy(){}};detail=async cid=>onRefresh(cid);globalThis.actions={applyCaseAction,dispatchCase,messageCentre};})();`,sandbox);
  const form=(action,data={})=>({dataset:{caseAction:action},data,querySelector:()=>null,querySelectorAll:()=>[]});
- return {calls,refreshed,nodes,run:(action,data)=>sandbox.actions.applyCaseAction(form(action,data),caseData.id,caseData,{dataset:{dirty:String(dirty)}}),dispatch:()=>sandbox.actions.dispatchCase(caseData.id,{fileId:'report',confirmed:true}),messages:()=>sandbox.actions.messageCentre()};
+ return {calls,refreshed,nodes,chatBadge,run:(action,data)=>sandbox.actions.applyCaseAction(form(action,data),caseData.id,caseData,{dataset:{dirty:String(dirty)}}),dispatch:()=>sandbox.actions.dispatchCase(caseData.id,{fileId:'report',confirmed:true}),messages:()=>sandbox.actions.messageCentre()};
 }
 
 test('unsaved case data blocks unrelated mutations and report dispatch before requests or re-rendering',async()=>{
@@ -41,5 +42,5 @@ test('pending uploads block status changes and dispatch; clean case actions cont
 });
 test('chat centre links to a dedicated case conversation and escapes message text',async()=>{
  const f=fixture();await f.messages();const html=f.nodes.get('#chat-conversations').innerHTML;
- assert.match(html,/href="#chat\/case-123"/);assert.match(html,/Nachfrage &lt;test&gt;/);assert.doesNotMatch(html,/<test>/);
+ assert.match(html,/href="#chat\/case-123"/);assert.match(html,/Nachfrage &lt;test&gt;/);assert.doesNotMatch(html,/<test>/);assert.equal(f.chatBadge.textContent,'2');assert.equal(f.chatBadge.hidden,false);
 });
