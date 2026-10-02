@@ -36,3 +36,10 @@ test('Saving case fields preserves an unsent chat selection and does not deadloc
  assert.equal(restored.batch,saved.batch);assert.equal(f.form.elements.note.value,saved.note);assert.equal(restored.batch.items.length,1);
  await f.submit();assert.equal(f.calls.length,1);assert.equal(f.uploads,1);assert.equal(f.calls[0].data.note,saved.note);
 });
+
+test('Gallery exposes removable annotated copies beside originals without rendering trashed files',()=>{
+ const scope={window:{}};vm.runInNewContext(fs.readFileSync(require.resolve('../assets/workspace-ui'),'utf8'),scope);
+ const original=crypto.randomUUID(),marked=crypto.randomUUID(),trashed=crypto.randomUUID();
+ const html=scope.window.UnfallxWorkspace.photos([{id:original,kind:'photo',type:'image/jpeg',name:'Original',size:123,canDelete:false},{id:marked,kind:'photo_annotation',type:'image/jpeg',name:'Markierung',size:124,canDelete:true},{id:trashed,kind:'photo_annotation',name:'Entfernt',deletedAt:'2026-10-02'}]);
+ assert(html.includes('Originalfoto'));assert(html.includes('Markierte Kopie'));assert(html.includes('data-case-photo="'+marked+'"'));assert(html.includes('data-file-delete="'+marked+'"'));assert(!html.includes('data-file-delete="'+original+'"'));assert(!html.includes(trashed));
+});
