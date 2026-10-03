@@ -202,7 +202,27 @@ function sendError(res, status, isHead, urlPath) {
     status === 404 ? 'Nicht gefunden' : 'Fehler', isHead);
 }
 
-const server = http.createServer(async (req, res) => {
+/* Sichere, lokale Weiterleitungsadresse: genau ein führender Slash (kein //fremde-domain)
+   und jedes Segment neu kodiert (keine ungültigen Zeichen im Location-Header). */
+function localLocation(p) {
+  return '/' + String(p).replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
+}
+
+process.on('unhandledRejection', (err) => {
+  console.error('Unbehandelter Fehler:', err);
+});
+
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch((err) => {
+    console.error('Fehler bei', req.method, req.url, err);
+    try {
+      if (!res.headersSent) sendError(res, 500, req.method === 'HEAD');
+      else res.destroy();
+    } catch { res.destroy(); }
+  });
+});
+
+async function handleRequest(req, res) {
   const isHead = req.method === 'HEAD';
   let urlPath, hatVersion;
   try {
@@ -289,7 +309,7 @@ const server = http.createServer(async (req, res) => {
   /* Nachgestellten Slash entfernen: /impressum/ -> /impressum */
   if (urlPath.length > 1 && urlPath.endsWith('/')) {
     const target = urlPath.replace(/\/+$/, '');
-    return send(res, 301, { Location: target }, '', isHead);
+    return send(res, 301, { Location: localLocation(target) }, '', isHead);
   }
 
   /* Startseite auf die kanonische Adresse führen. */
@@ -297,7 +317,7 @@ const server = http.createServer(async (req, res) => {
 
   /* .html in der URL auf saubere Adresse umleiten */
   if (/\.html$/i.test(urlPath)) {
-    return send(res, 301, { Location: urlPath.replace(/\.html$/i, '') }, '', isHead);
+    return send(res, 301, { Location: localLocation(urlPath.replace(/\.html$/i, '')) }, '', isHead);
   }
 
   const relative = hostInfo.isApp&&urlPath==='/datenschutz'?'portal-datenschutz.html':
@@ -354,7 +374,7 @@ const server = http.createServer(async (req, res) => {
   };
 
   tryNext(0);
-});
+}
 
 server.requestTimeout = 180000;
 server.headersTimeout = 15000;
