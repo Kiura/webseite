@@ -1,14 +1,15 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 const source=fs.readFileSync(path.resolve(__dirname,'../assets/portal.js'),'utf8');
-async function render({role='partner',status='approved',hash='',failMoney=false,rows=[]}={}){
+async function render({role='partner',status='approved',hash='',failMoney=false,rows=[],startPage='faelle'}={}){
  const nodes=new Map(),calls=[],redirects=[];
  const make=()=>({value:'',innerHTML:'',textContent:'',dataset:{},hidden:false,classList:{toggle(){}},setAttribute(){},getAttribute(){return 'false'},addEventListener(){},querySelector(){return null},querySelectorAll(){return[]},scrollIntoView(){}});
  const find=s=>{if(!nodes.has(s))nodes.set(s,make());return nodes.get(s);};
- const data={user:{role,name:'Test Partner',preferences:{startPage:'faelle'}},company:{status,name:'Testbetrieb'},csrf:'test',states:{draft:'Entwurf'}};
+ const data={user:{role,name:'Test Partner',preferences:{startPage}},company:{status,name:'Testbetrieb'},csrf:'test',states:{draft:'Entwurf'}};
  const location={hash,pathname:'/portal',replace:x=>redirects.push(x)};
  const sandbox={UnfallxSessionGuard:require('../assets/session-guard'),AbortController,AbortSignal,setInterval:()=>0,clearInterval(){},console,Intl,Date,URL,File:class{},FormData:class{},setTimeout,clearTimeout,matchMedia:()=>({matches:false}),location,history:{replaceState(_a,_b,url){redirects.push(url);if(url.includes('#'))location.hash='#'+url.split('#')[1];}},UnfallxHelp:{contextual:()=> 'orientierung'},document:{addEventListener(){},getElementById:id=>find("#"+id),body:make(),querySelector:find,querySelectorAll:()=>[]},window:{addEventListener(){},scrollTo(){}},fetch:async url=>{calls.push(url);const route=url.replace('/api/portal','');let result;
   if(route==='/me')result=data;
+  else if(route==='/admin/overview')result={companies:[],team:[],storage:null};
   else if(route==='/chat/inbox')result={messages:[]};
   else if(route==='/cases'||route.startsWith('/cases?folder=')){const folder=route.split('=')[1]||'active';result={cases:rows.filter(c=>folder==='all'||(c.filing?.folder||'active')===folder),folders:{active:rows.filter(c=>(c.filing?.folder||'active')==='active').length,archived:rows.filter(c=>c.filing?.folder==='archived').length,deleted:rows.filter(c=>c.filing?.folder==='deleted').length}};}
   else if(route==='/mobile/overview')return {ok:!failMoney,status:failMoney?503:200,json:async()=>failMoney?{error:'Verbindung unterbrochen'}:{totals:{expectedCents:3750,payableCents:1250,paidCents:8100},items:[]}};
@@ -23,6 +24,17 @@ test('an explicit case-list deep link remains intact',async()=>{const r=await re
 test('pending partner cannot start intake and does not request commission data',async()=>{const r=await render({status:'pending'});assert.match(r.html,/Prüfung ausstehend/);assert(!r.html.includes('partner-capture'));assert(!r.calls.some(x=>x.includes('/mobile/overview')));assert(!r.html.includes('37,50'));});
 test('commission read failure leaves unknown amounts, exposes retry and preserves intake',async()=>{const r=await render({failMoney:true});assert.match(r.html,/ws-commission-strip/);assert.match(r.html,/data-retry-partner/);assert.match(r.html,/Schaden aufnehmen/g);assert(!r.html.includes('0,00'));});
 test('admin keeps the existing case-list preference and internal navigation',async()=>{const r=await render({role:'admin'});assert.match(r.html,/Fallübersicht/);assert(!r.html.includes('partner-wallet'));assert(r.redirects.some(x=>x.includes('#faelle')));assert(!r.calls.some(x=>x.includes('/mobile/overview')));assert.match(r.nav,/href="#verwaltung"/);assert.doesNotMatch(r.nav,/href="#team"/);});
+test('admin Zentrale exposes live work areas without a case creation action',async()=>{
+ const r=await render({role:'admin',hash:'#faelle'});
+ for(const section of ['besichtigungen','status','chat','partner','kanzleien','verguetung','statistik','verwaltung'])assert.match(r.nav,new RegExp('href="#'+section+'"'));
+ assert.doesNotMatch(r.nav,/href="#neu"|Neuer Fall/);
+});
+test('admin inspection view reads case appointments and escapes address text',async()=>{
+ const row={id:'11111111-1111-4111-8111-111111111111',number:'UX-TEST',status:'review',updatedAt:'2026-10-03T08:00:00Z',intake:{vehicle:'Testwagen',inspectionDate:'2026-10-03',inspectionTime:'11:30',inspectionStreet:'<script>Test</script>',inspectionHouseNumber:'1',inspectionPostcode:'13407',inspectionCity:'Berlin'}};
+ const r=await render({role:'admin',hash:'#besichtigungen',rows:[row]});
+ assert(r.calls.includes('/api/portal/cases?folder=all'));
+ assert.match(r.html,/Besichtigungen/);assert.match(r.html,/11:30/);assert.match(r.html,/&lt;script&gt;Test&lt;\/script&gt;/);assert.doesNotMatch(r.html,/<script>Test<\/script>/);
+});
 test('case display escapes untrusted customer and vehicle text',async()=>{const r=await render({rows:[{id:'11111111-1111-4111-8111-111111111111',number:'<img onerror=alert(1)>',status:'draft',updatedAt:'2026-09-11T08:00:00Z',intake:{vehicle:'<script>unsafe</script>',owner:'A & B',plate:'B UX 1'}}]});assert(!r.html.includes('<script>unsafe'));assert.match(r.html,/&lt;script&gt;unsafe/);assert.match(r.html,/&lt;img onerror=alert\(1\)&gt;/);});
 
 test('capture is directly reachable from overview, primary navigation, mobile bar and header',async()=>{const r=await render();for(const html of [r.html,r.nav,r.mobile,r.top])assert.match(html,/href="#neu"/);assert(r.html.indexOf('partner-capture')<r.html.indexOf('ws-commission-strip'));assert(r.nav.indexOf('href="#neu"')<r.nav.indexOf('Firmenprofil & Konto'));assert.match(r.mobile,/aria-label="Schaden übermitteln"/);assert.match(r.top,/Schaden übermitteln/);});
