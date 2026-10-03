@@ -153,10 +153,10 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
    const {jwtVerify,createRemoteJWKSet}=await jose();
    const address=settings('0account').keys;
    if(!keysets.has(address))keysets.set(address,createRemoteJWKSet(new URL(address),{timeoutDuration:10000}));
-   const {payload}=await jwtVerify(data.logout_token,keysets.get(address),{issuer:settings('0account').issuer,audience:clientId('0account'),algorithms:['EdDSA'],clockTolerance:30,requiredClaims:['iat','iss','aud','events','sid']});
-   // Spezifikation: ein Abmelde-Hinweis trägt niemals einen nonce. exp fordert
-// die Spezifikation ebenfalls, unser Aussteller sendet es bisher nicht — die
-// Prüfung verlangt es deshalb nicht, jose prüft es, wenn es da ist.
+   const {payload}=await jwtVerify(data.logout_token,keysets.get(address),{issuer:settings('0account').issuer,audience:clientId('0account'),algorithms:['EdDSA'],clockTolerance:30,requiredClaims:['exp','iat','iss','aud','events','sid']});
+   // Spezifikation: ein Abmelde-Hinweis trägt niemals einen nonce und immer ein
+   // exp. 0account sendet exp jetzt (fünf Minuten nach iat), deshalb wird es
+   // hier verlangt statt nur geprüft, wenn es zufällig vorhanden ist.
    assert(!('nonce'in payload),'Ungültige Rückmeldung.',400);
    assert(payload.events&&typeof payload.events==='object'&&'http://schemas.openid.net/event/backchannel-logout'in payload.events,'Ungültige Rückmeldung.',400);
    assert(typeof payload.sid==='string'&&payload.sid.length>0&&payload.sid.length<=64,'Ungültige Rückmeldung.',400);

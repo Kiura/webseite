@@ -291,6 +291,13 @@ test('Back-channel logout from 0account ends exactly the matching local sessions
   for(const claims of [{aud:'zero-client',sub:'sub',sid:'zero-session-B',events:{}},{aud:'zero-client',sub:'sub',sid:'zero-session-B',events:{[EVENT]:{}},nonce:'n'},{aud:'other-client',sub:'sub',sid:'zero-session-B',events:{[EVENT]:{}}}])assert.equal((await backchannel(claims)).status,400);
   assert.equal(await sidSessions('zero-session-B'),1);
 
+  // Ohne exp ebenfalls 400. Die Spezifikation verlangt exp; solange wir es nur
+  // geprüft haben, wenn es vorhanden war, wäre ein abgefangener Hinweis
+  // unbegrenzt gültig geblieben.
+  const ohneExp=await new SignJWT({aud:'zero-client',sub:'sub',sid:'zero-session-B',events:{[EVENT]:{}}}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setIssuedAt().sign(pair.privateKey);
+  assert.equal((await fetch(h.base+'/api/portal/oauth/0account/backchannel-logout',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Forwarded-For':'bcl'},body:new URLSearchParams({logout_token:ohneExp})})).status,400);
+  assert.equal(await sidSessions('zero-session-B'),1);
+
   // Aber ein korrekter Hinweis für die zweite Sitzung endet auch sie.
   assert.equal((await backchannel({aud:'zero-client',sub:'sub-bcl-2@example.com',sid:'zero-session-B',events:{[EVENT]:{}}})).status,200);
   assert.equal(await sidSessions('zero-session-B'),0);
