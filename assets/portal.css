@@ -48,3 +48,17 @@
 /* The submitting partner has one direct workspace, with account tools secondary. */
 .portal-secondary-nav{margin-top:20px;border-top:1px solid #e2e7ed;padding-top:12px}.portal-secondary-nav summary{cursor:pointer;color:#647286;font-size:13px;font-weight:650;padding:13px 14px;line-height:1.5}.portal-secondary-nav>div{display:grid;gap:4px;margin-top:8px}.portal-secondary-nav summary:focus-visible{outline:3px solid #e83930;outline-offset:2px}.portal-heading>a.btn{flex:none}.portal-heading>button{flex:none}
 @media(max-width:640px){.portal-heading>a.btn,.portal-heading>button{width:100%;justify-content:center}.portal-secondary-nav{margin-top:10px}}
+
+.portal-chat-audio { display: block; width: 100%; max-width: 360px; margin: 10px 0; }
+
+/* Shared case conversation: originals, accessible attachments and narrow screens. */
+.ws-chat-attachment{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:14px;max-width:100%}
+.ws-chat-attachment img{display:block;width:150px;max-width:100%;height:110px;object-fit:cover;border-radius:16px}
+.ws-chat-attachment .portal-button{white-space:normal;overflow-wrap:anywhere;max-width:100%}
+.ws-chat-drop{display:grid;gap:10px;padding:20px;border:2px dashed #d9dce3;border-radius:20px;background:#f9fafc}
+.ws-chat-drop[data-dragging="true"]{border-color:#e32620;background:#fff1f0}
+.ws-chat-drop input{min-width:0;max-width:100%;font-size:16px}
+.ws-chat-selection{list-style:none;padding:0;display:grid;gap:8px}
+.ws-chat-selection li{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 14px;background:#f5f6f9;border-radius:16px}
+.ws-chat-selection span{overflow-wrap:anywhere;min-width:0}.ws-chat-selection button{min-height:44px;min-width:44px;flex-shrink:0}
+.ws-conversation p{white-space:pre-wrap;overflow-wrap:anywhere}.portal-chat-audio{max-width:100%}

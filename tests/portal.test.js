@@ -19,6 +19,16 @@ test('Real HTTP, durable database, tenant boundaries and full case/payment workf
  const r=await call('/settings',pref,p1);assert.equal(r.status,200);assert.equal(r.json.user.role,'partner');assert.equal(r.json.user.email,'one@example.com');assert.equal(r.json.user.companyId,p1.company.id);
  const settings=(await call('/settings',undefined,p1)).json;assert.equal(settings.preferences.theme,'light');assert.equal(settings.profile.name,pref.name);assert.equal(settings.storage,null);
  assert.equal((await call('/settings',undefined,p2)).json.preferences.theme,'light');
+ const adminSettings=(await call('/settings',undefined,admin)).json;
+ const dark=await call('/settings',{...adminSettings.profile,...adminSettings.preferences,startPage:'start',theme:'dark',motion:'calm',reducedMotion:false},admin);
+ assert.equal(dark.status,200);assert.equal(dark.json.user.preferences.theme,'dark');assert.equal(dark.json.user.preferences.motion,'calm');
+ assert.equal((await call('/settings',undefined,admin)).json.preferences.theme,'dark');
+ assert.equal((await call('/settings',{...adminSettings.profile,...adminSettings.preferences,startPage:'start',theme:'invalid',motion:'calm',reducedMotion:false},admin)).status,400);
+ assert.equal((await call('/admin/zentrale-config',undefined,p1)).status,403);
+ const config={dailyGoal:8,showGoal:true,slaDays:6,lawyerFollowupDays:9,hallSlots:5};
+ assert.equal((await call('/admin/zentrale-config',config,admin)).status,200);
+ assert.deepEqual((await call('/admin/zentrale-config',undefined,admin)).json.config,config);
+ assert.equal((await call('/admin/zentrale-config',{...config,hallSlots:99},admin)).status,400);
  const {actor:secondAdmin}=await signIn('info@unfallx.com');assert.equal((await call('/settings',undefined,admin)).json.activeSessions,2);
  assert.equal((await call('/sessions/revoke-others',{confirmed:false},admin)).status,400);
  assert.equal((await call('/sessions/revoke-others',{confirmed:true},admin)).json.revoked,1);

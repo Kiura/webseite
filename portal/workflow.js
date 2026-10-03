@@ -23,7 +23,7 @@ async function apply(s,user,c,data,audit){
   D.assert(internal&&c.companyId,'Nur intern für Partnerfälle verfügbar.',403);D.assert(kinds[data.kind],'Bitte eine Anforderung auswählen.');D.assert(c.requests.filter(r=>r.state!=='resolved').length<30,'Bitte zuerst bestehende Rückfragen klären.');
   const perspective=data.kind==='photo'?D.text(data.perspective,30):'';D.assert(!perspective||photoPerspectives.has(perspective),'Ungültige Fotoperspektive.');
   const request={id:D.id(),kind:data.kind,perspective:perspective||null,title:kinds[data.kind],note:D.text(data.note,2000,true),due:dueDate(data.due),state:'open',createdAt:now,createdBy:user.name,replies:[]};
-  c.requests.push(request);if(!['draft','recording','ready_to_submit'].includes(c.status))c.status='needs_info';
+  c.requests.push(request);if(!['draft','recording','ready_to_submit'].includes(c.status)&&(D.transitions[c.status]||[]).includes('needs_info'))c.status='needs_info';
   await audit(s,user,c,'Unterlagen angefordert',request.title+': '+request.note);return true;
  }
  const request=c.requests.find(r=>r.id===data.requestId);D.assert(request,'Rückfrage nicht gefunden.',404);

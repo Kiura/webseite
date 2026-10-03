@@ -7,21 +7,22 @@ function createMobileChat({tx,caseAccess,visible,audit,rate}) {
  async function approved(s,user){D.assert(user.role==='partner'&&(await s.get('company',user.companyId))?.status==='approved','Nur für freigeschaltete Partner.',403);}
  const readKey=(u,c)=>D.hash(identity(u)+':'+c.id);
  async function route(path,req,user,data){
-  if(path==='/mobile/chat/config'&&req.method==='GET')return tx(async s=>{await approved(s,user);return {version:1,maxAttachments:6,maxBytes:25*1024*1024};});
-  if(path==='/mobile/chat/inbox'&&req.method==='GET')return tx(async s=>{
-   await approved(s,user);const conversations=[];let unreadCount=0;
-   for(const c of (await s.list('case',user.companyId)).filter(c=>visible(user,c))){
+  if(path==='/mobile/chat/config'&&req.method==='GET')return tx(async s=>{await approved(s,user);return {version:1,audioAttachments:true,maxAttachments:6,maxBytes:25*1024*1024};});
+  if(['/mobile/chat/inbox','/chat/inbox'].includes(path)&&req.method==='GET')return tx(async s=>{
+   if(path.startsWith('/mobile/')||user.role==='partner')await approved(s,user);else D.assert(['admin','appraiser'].includes(user.role),'Kein Portalzugang.',403);
+   const conversations=[];let unreadCount=0;
+   for(const c of (await s.list('case',user.role==='partner'?user.companyId:undefined)).filter(c=>visible(user,c))){
     const events=(await s.list('event',c.id)).filter(publicMessage).sort((a,b)=>a.at.localeCompare(b.at)||(a.sequence||0)-(b.sequence||0)||a.id.localeCompare(b.id));
     const latest=events.at(-1);if(!latest)continue;
     const read=await s.get('chat_read',readKey(user,c));
     const unread=events.filter(e=>e.actorId&&e.actorId!==user.id&&(e.sequence||0)>(read?.sequence||0)).length;unreadCount+=unread;
     conversations.push({id:latest.id,caseId:c.id,caseNumber:c.number,vehicle:c.intake.vehicle||'',plate:c.intake.plate||'',actor:latest.actor,note:latest.note||'',at:latest.at,unread,attachmentCount:latest.fileIds?.length||0});
    }
-   return {version:1,unreadCount,messages:conversations.sort((a,b)=>b.at.localeCompare(a.at)||a.caseId.localeCompare(b.caseId))};
+   return {version:1,audioAttachments:true,unreadCount,messages:conversations.sort((a,b)=>b.at.localeCompare(a.at)||a.caseId.localeCompare(b.caseId))};
   });
   const match=path.match(/^\/cases\/([a-f0-9-]{36})\/messages(\/read)?$/);if(!match||req.method!=='POST')return undefined;
   return tx(async s=>{
-   await approved(s,user);const c=await caseAccess(s,user,match[1]);
+   if(user.role==='partner')await approved(s,user);else D.assert(['admin','appraiser'].includes(user.role),'Kein Portalzugang.',403);const c=await caseAccess(s,user,match[1]);
    if(match[2]){
     D.assert(uuid(data.throughEventId),'Ungültige Lesemarkierung.');const event=await s.get('event',data.throughEventId);
     D.assert(event&&event.caseId===c.id&&publicMessage(event),'Nachricht nicht gefunden.',404);

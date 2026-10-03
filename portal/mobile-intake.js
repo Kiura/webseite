@@ -51,7 +51,7 @@ function createMobileIntake({tx,body,rate,ip,env,blobs,authorize,onSubmitted=asy
    else{await rate(s,'mobile-new:'+a.company.id,100,86400000);assert(!await s.get('mobile_access',data.id),'Fallkennung nicht verfügbar.',409);c={id:data.id,number:'UX-'+new Date().getUTCFullYear()+'-'+data.id.slice(0,8).toUpperCase(),companyId:a.company.id,ownerUserId:a.user.id,source:'mobile',companyName:a.company.name,status:'recording',version:0,intake:{},assignee:null,finance:null,createdAt:new Date().toISOString()};await s.put('mobile_access',{id:c.id,secretHash:key,createdAt:new Date().toISOString()});}
    assert(!['active','completed'].includes(c.mobile?.customerHandoff?.state),'Kundenzugang aktiv. Bitte den aktuellen Kundenstand in der App übernehmen.',409);
    const changed=c.mobile?.fieldsHash!==data.fieldsHash;
-   if(changed){c.intake={...c.intake,...asIntake(values)};c.mobile={...c.mobile,fields:values,fieldsHash:data.fieldsHash,reference:text(data.reference,100),updatedAt:new Date().toISOString()};await event(s,c,a,'Kundendaten aus iPhone-App gespeichert');}
+   if(changed){const retainedFields={...c.mobile?.retainedFields};if(Object.hasOwn(values,'firstRegistration'))delete retainedFields.firstRegistration;else if(c.mobile?.fields?.firstRegistration)retainedFields.firstRegistration=c.mobile.fields.firstRegistration;c.intake={...c.intake,...asIntake(values)};c.mobile={...c.mobile,retainedFields,fields:values,fieldsHash:data.fieldsHash,reference:text(data.reference,100),updatedAt:new Date().toISOString()};await event(s,c,a,'Kundendaten aus iPhone-App gespeichert');}
    return {ok:true,id:c.id};
   });
  }
@@ -77,10 +77,10 @@ function createMobileIntake({tx,body,rate,ip,env,blobs,authorize,onSubmitted=asy
   });
  }
  async function finish(req,cid,a){const key=capability(req),data=await body(req,1000);const submissionID=data?.submissionID;assert(submissionID===undefined||uuid.test(submissionID),'Ungültige Übermittlungskennung.');return tx(async s=>{
-  const c=await access(s,cid,key,a,true);if(submissionID&&c.mobile?.submittedRequestID===submissionID)return {ok:true,id:c.id,submissionID};if(c.submittedAt&&c.status!=='needs_info')return {ok:true,id:c.id};const files=(await s.list('file',cid)).filter(f=>!f.deletedAt);
+  const c=await access(s,cid,key,a,true);if(submissionID&&c.mobile?.submittedRequestID===submissionID)return {ok:true,id:c.id,submissionID,submittedAt:c.submittedAt};if(c.submittedAt&&c.status!=='needs_info')return {ok:true,id:c.id,submissionID:c.mobile?.submittedRequestID,submittedAt:c.submittedAt};const files=(await s.list('file',cid)).filter(f=>!f.deletedAt);
   for(const p of perspectives)if(p!=='other')assert(files.some(f=>f.perspective===p&&(p==='registration'?f.kind==='registration':f.kind==='photo')),'Es fehlen Fahrzeugfotos oder der Fahrzeugschein.');
   for(const kind of ['unfallx','nextright'])assert(files.some(f=>f.kind==='authorization'&&f.orderKind===kind&&f.fieldsHash===c.mobile.fieldsHash),'Es fehlen aktuelle unterschriebene Dokumente.');
-  c.status='submitted';c.submittedAt=new Date().toISOString();if(submissionID)c.mobile.submittedRequestID=submissionID;const completedEvent=await event(s,c,a,'Kundenaufnahme abgeschlossen');await onSubmitted(s,a.user,c,completedEvent);return {ok:true,id:c.id};
+  c.status='submitted';c.submittedAt=new Date().toISOString();if(submissionID)c.mobile.submittedRequestID=submissionID;const completedEvent=await event(s,c,a,'Kundenaufnahme abgeschlossen');await onSubmitted(s,a.user,c,completedEvent);return {ok:true,id:c.id,submissionID:c.mobile?.submittedRequestID,submittedAt:c.submittedAt};
  });}
  async function route(path,req){
   if(path==='/mobile/config'&&req.method==='GET')return {version:2,enabled:isEnabled(),authentication:'approved-partner-session'};
