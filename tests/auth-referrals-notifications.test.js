@@ -231,7 +231,13 @@ test('0account sessions carry the ID-token hint so their logout also ends the 0a
   return originalFetch(input,options);};
  const complete={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',termsAndConditions:true,privacyPolicy:true};
  async function oauthSession(address,fields){userinfo={[NS]:fields};const start=await h.call('/oauth/start',{provider:'0account'});const url=new URL(start.json.redirect);nextJWT=await new SignJWT({sub:'sub-'+address,email:address,email_verified:true,given_name:'Erika',family_name:'Musterfrau',phone_number:'+4930123456',nonce:url.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);return h.call('/oauth/0account/callback?state='+url.searchParams.get('state')+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});}
- const hint=value=>{assert.match(value,new RegExp('^'+ISSUER.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'/oauth/logout\\?id_token_hint='));const token=decodeURIComponent(value.split('id_token_hint=')[1]);assert.equal(token.split('.').length,3);return token;};
+ // Parst die Abmeldeadresse statt sie zu zerschneiden: hinter id_token_hint
+ // stehen jetzt weitere Parameter, die ein split() mit in den Token gezogen hätte.
+ const hint=value=>{const u=new URL(value);assert.equal(u.origin+u.pathname,ISSUER+'/oauth/logout');const token=u.searchParams.get('id_token_hint');assert.ok(token,'id_token_hint fehlt');assert.equal(token.split('.').length,3);
+  // Ohne Ziel beendet 0account die Sitzung und der Browser bleibt auf dem
+  // dortigen Endpunkt stehen -- genau der Fall, der beim Testen aufgefallen ist.
+  const back=u.searchParams.get('post_logout_redirect_uri');assert.ok(back,'post_logout_redirect_uri fehlt');assert.equal(new URL(back).pathname,'/login');
+  return token;};
  try{
   // Direkte Registrierung: die Abmeldung liefert den Abmeldeendpunkt mit Hinweis.
   const direct=await oauthSession('rplogout@example.com',complete);
