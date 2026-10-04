@@ -200,4 +200,17 @@ const p=text(data.provider,20,true);assert(table[p]&&configured(p),'Diese Anmeld
  }
  return {route,config,begin,revoke};
 }
-module.exports={createOAuth,verifyIdentity,zeroaccount,ZEROACCOUNT_END_SESSION,ZEROACCOUNT_BACKCHANNEL};
+// Beendet die 0account-Sitzung von Server zu Server. Kein Browser beteiligt:
+// der ID-Token ist der Nachweis, deshalb braucht die App weder eine
+// Post-Logout-Adresse noch einen Eintrag dafür in der App-Konfiguration.
+//
+// Fehler bleiben hier. Die örtliche Abmeldung ist zu diesem Zeitpunkt schon
+// vollzogen und darf nicht daran scheitern, dass 0account gerade nicht
+// erreichbar ist -- im schlechtesten Fall läuft die dortige Sitzung ab.
+async function endZeroaccountSession(env,idToken){
+ try{
+  const response=await fetch(zeroaccount(env).issuer+ZEROACCOUNT_END_SESSION,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({id_token_hint:idToken}),signal:AbortSignal.timeout(5000),redirect:'error'});
+  if(!response.ok)console.error('0account logout: unerwarteter Status',response.status);
+ }catch{console.error('0account logout: nicht erreichbar');}
+}
+module.exports={createOAuth,verifyIdentity,zeroaccount,endZeroaccountSession,ZEROACCOUNT_END_SESSION,ZEROACCOUNT_BACKCHANNEL};

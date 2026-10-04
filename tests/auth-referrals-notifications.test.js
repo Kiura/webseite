@@ -87,7 +87,7 @@ test('0account signs EdDSA and registers a partner through the same authorizatio
  await assert.rejects(verifyIdentity(await sign(),'0account','other-client','nonce-1',keys,settings));
  await assert.rejects(verifyIdentity(await sign(),'0account','zero-client','wrong-nonce',keys,settings));
 
- const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;let nextJWT='',lastExchange=null;
+ const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;let nextJWT='',lastExchange=null;const logouts=[];
  global.fetch=async(input,options)=>{const url=String(input);if(url===settings.keys)return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});if(url===settings.token){lastExchange=Object.fromEntries(options.body);return new Response(JSON.stringify({id_token:nextJWT}),{status:200,headers:{'Content-Type':'application/json'}});}return originalFetch(input,options);};
  try{
   // Die Schaltfläche steht vor Google und nennt 0account beim Namen.
@@ -167,6 +167,7 @@ test('0account registers the partner without the form when it supplies every req
   if(url===ISSUER+'/.well-known/jwks.json')return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});
   if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
   if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/logout'){logouts.push({method:options?.method,body:Object.fromEntries(options.body)});return new Response('',{status:200});}
   return originalFetch(input,options);};
  // Ohne companyType: die App kann die Unternehmensart nicht führen, genau so
  // sieht der Produktivfall aus.
@@ -223,20 +224,23 @@ test('0account sessions carry the ID-token hint so their logout also ends the 0a
  const ISSUER='https://rplogout-v1.0account.test',NS='https://0account.com/claims/fields';
  const {generateKeyPair,exportJWK,SignJWT}=await import('jose'),pair=await generateKeyPair('Ed25519'),key=await exportJWK(pair.publicKey);key.kid='zeroaccount-rplogout';key.alg='EdDSA';key.use='sig';
  const h=await harness({ZEROACCOUNT_CLIENT_ID:'zero-client',ZEROACCOUNT_CLIENT_SECRET:'zero-secret',ZEROACCOUNT_ISSUER:ISSUER}),originalFetch=global.fetch;
- let nextJWT='',userinfo={};
+ let nextJWT='',userinfo={};const logouts=[];
  global.fetch=async(input,options)=>{const url=String(input);
   if(url===ISSUER+'/.well-known/jwks.json')return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});
   if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
   if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/logout'){logouts.push({method:options?.method,body:Object.fromEntries(options.body)});return new Response('',{status:200});}
   return originalFetch(input,options);};
  const complete={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',termsAndConditions:true,privacyPolicy:true};
  async function oauthSession(address,fields){userinfo={[NS]:fields};const start=await h.call('/oauth/start',{provider:'0account'});const url=new URL(start.json.redirect);nextJWT=await new SignJWT({sub:'sub-'+address,email:address,email_verified:true,given_name:'Erika',family_name:'Musterfrau',phone_number:'+4930123456',nonce:url.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);return h.call('/oauth/0account/callback?state='+url.searchParams.get('state')+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});}
- // Parst die Abmeldeadresse statt sie zu zerschneiden: hinter id_token_hint
- // stehen jetzt weitere Parameter, die ein split() mit in den Token gezogen hätte.
- const hint=value=>{const u=new URL(value);assert.equal(u.origin+u.pathname,ISSUER+'/oauth/logout');const token=u.searchParams.get('id_token_hint');assert.ok(token,'id_token_hint fehlt');assert.equal(token.split('.').length,3);
-  // Ohne Ziel beendet 0account die Sitzung und der Browser bleibt auf dem
-  // dortigen Endpunkt stehen -- genau der Fall, der beim Testen aufgefallen ist.
-  const back=u.searchParams.get('post_logout_redirect_uri');assert.ok(back,'post_logout_redirect_uri fehlt');assert.equal(new URL(back).pathname,'/login');
+ // Die Abmeldung bei 0account geschieht von Server zu Server; es gibt keine
+ // Adresse mehr, die der Browser aufruft. Geprüft wird also der ausgehende
+ // Aufruf: ein POST mit dem ID-Token als Hinweis und nichts weiter -- kein
+ // post_logout_redirect_uri, weil dieser Weg keines braucht.
+ const hint=()=>{const call=logouts.at(-1);assert.ok(call,'kein Abmeldeaufruf an 0account');
+  assert.equal(call.method,'POST');
+  const token=call.body.id_token_hint;assert.ok(token,'id_token_hint fehlt');assert.equal(token.split('.').length,3);
+  assert.deepEqual(Object.keys(call.body),['id_token_hint']);
   return token;};
  try{
   // Direkte Registrierung: die Abmeldung liefert den Abmeldeendpunkt mit Hinweis.
@@ -244,7 +248,7 @@ test('0account sessions carry the ID-token hint so their logout also ends the 0a
   assert.equal(direct.location,'/portal');
   const directActor={cookie:direct.cookie.match(/ux_session=[a-f0-9]{64}/)[0]};directActor.csrf=(await h.call('/me',undefined,directActor)).json.csrf;
   const ended=await h.call('/logout',{},directActor);
-  assert.equal(ended.json.ok,true);hint(ended.json.idpLogout);
+  assert.equal(ended.json.ok,true);assert.equal(ended.json.idpLogout,undefined,'der Browser wird nicht mehr umgeleitet');hint();
 
   // Weg über das Formular: der Hinweis wandert aus dem Zwischenstand mit.
   const pending=await oauthSession('rpform@example.com',{...complete,privacyPolicy:false});
@@ -254,7 +258,7 @@ test('0account sessions carry the ID-token hint so their logout also ends the 0a
   assert.equal(finished.status,200);
   const formActor={cookie:finished.cookie.match(/ux_session=[a-f0-9]{64}/)[0]};formActor.csrf=(await h.call('/me',undefined,formActor)).json.csrf;
   const endedForm=await h.call('/logout',{},formActor);
-  assert.equal(endedForm.json.ok,true);hint(endedForm.json.idpLogout);
+  assert.equal(endedForm.json.ok,true);hint();
 
   // Passwort-Sitzungen haben keinen Anbieter; dort fehlt der Endpunkt.
   const password=await h.register('pwonly@example.com');
@@ -271,6 +275,7 @@ test('Back-channel logout from 0account ends exactly the matching local sessions
   if(url===ISSUER+'/.well-known/jwks.json')return new Response(JSON.stringify({keys:[key]}),{status:200,headers:{'Content-Type':'application/json'}});
   if(url===ISSUER+'/oauth/token')return new Response(JSON.stringify({id_token:nextJWT,access_token:'zero-access-token'}),{status:200,headers:{'Content-Type':'application/json'}});
   if(url===ISSUER+'/oauth/userinfo')return new Response(JSON.stringify(userinfo),{status:200,headers:{'Content-Type':'application/json'}});
+  if(url===ISSUER+'/oauth/logout'){logouts.push({method:options?.method,body:Object.fromEntries(options.body)});return new Response('',{status:200});}
   return originalFetch(input,options);};
  const fields={companyName:'Musterwerkstatt GmbH',streetAddress:'Teststraße 5',postalCode:'10115',city:'Berlin',termsAndConditions:true,privacyPolicy:true};
  async function oauthSession(address,sid){userinfo={[NS]:fields};const start=await h.call('/oauth/start',{provider:'0account'});const url=new URL(start.json.redirect);nextJWT=await new SignJWT({sub:'sub-'+address,email:address,email_verified:true,given_name:'Erika',family_name:'Musterfrau',phone_number:'+4930123456',sid,nonce:url.searchParams.get('nonce')}).setProtectedHeader({alg:'EdDSA',kid:key.kid}).setIssuer(ISSUER).setAudience('zero-client').setIssuedAt().setExpirationTime('5m').sign(pair.privateKey);return h.call('/oauth/0account/callback?state='+url.searchParams.get('state')+'&code=test-code',undefined,{cookie:start.cookie.split(';')[0]});}

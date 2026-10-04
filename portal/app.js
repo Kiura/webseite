@@ -16,7 +16,7 @@ const {accessEmail}=require('./email-templates');
 const passwords=require('./passwords');
 const {notice}=require('./brand-mail');
 const {publicUser}=D;
-const {createOAuth,zeroaccount,ZEROACCOUNT_END_SESSION,ZEROACCOUNT_BACKCHANNEL}=require('./oauth');
+const {createOAuth,zeroaccount,endZeroaccountSession,ZEROACCOUNT_BACKCHANNEL}=require('./oauth');
 const {createReferrals}=require('./referrals');
 const {createNotifications}=require('./notifications');
 const {createSecurity}=require('./security');
@@ -195,15 +195,17 @@ function createPortal(options={}) {
   return tx(async s=>{const current=await auth(req,s),fresh=await s.get('user',user.id),ids=await s.list('identity',user.id);assert(current.user.id===user.id&&Date.now()-Date.parse(current.session.createdAt)<15*60000,'Bitte zuerst erneut anmelden.',401);const selected=ids.filter(i=>i.provider===data.provider);assert(JSON.stringify(selected)===JSON.stringify(selection),'Anmeldemethoden wurden geändert. Bitte erneut prüfen.',409);assert(fresh.passwordHash||ids.length>selected.length,'Bitte zuerst ein Passwort festlegen.');for(const i of selected)await s.remove('identity',i.id);return {message:'Anmeldemethode getrennt.'};});
  }
  if(path==='/me'&&req.method==='GET')return tx(async s=>({user:publicUser(user),csrf:session.csrf,company:user.companyId?await s.get('company',user.companyId):null,states:D.caseStates}));
- if(path==='/logout'&&req.method==='POST'){// Bei Anmeldung über 0account endet dort auch die dortige Sitzung; der
-  // Browser überbringt den nötigen Nachweis (RP-Initiated Logout).
+ if(path==='/logout'&&req.method==='POST'){// Bei Anmeldung über 0account dort ebenfalls abmelden -- Server zu Server,
+  // ohne den Browser dorthin zu schicken. Vorher lief das als Umleitung, was
+  // eine hinterlegte Post-Logout-Adresse brauchte und den Benutzer auf einer
+  // fremden Seite stehen ließ, sobald die fehlte.
   //
-  // post_logout_redirect_uri muss mitgegeben werden: ohne sie beendet 0account
-  // die Sitzung und der Browser bleibt auf dem dortigen Endpunkt stehen, weil
-  // es kein Ziel gibt. Die Adresse muss bei der App hinterlegt sein -- als
-  // exakte Redirect-URI oder auf einer eingetragenen erlaubten Herkunft.
-  const idpLogout=session.idp?.provider==='0account'&&session.idp.idToken?zeroaccount(env).issuer+ZEROACCOUNT_END_SESSION+'?id_token_hint='+encodeURIComponent(session.idp.idToken)+'&post_logout_redirect_uri='+encodeURIComponent(requestOrigin()+'/login'):null;
-  await tx(s=>s.remove('session',session.id));res.setHeader('Set-Cookie',sessionCookie('',0));return idpLogout?{ok:true,idpLogout}:{ok:true};}
+  // Die örtliche Abmeldung geschieht zuerst und gilt: sie darf nicht davon
+  // abhängen, dass 0account erreichbar ist.
+  const idToken=session.idp?.provider==='0account'?session.idp.idToken:null;
+  await tx(s=>s.remove('session',session.id));res.setHeader('Set-Cookie',sessionCookie('',0));
+  if(idToken)await endZeroaccountSession(env,idToken);
+  return {ok:true};}
  if(path==='/settings'&&req.method==='GET')return tx(async s=>({profile:{name:user.name,phone:user.phone||'',jobTitle:user.jobTitle||'',email:user.email},preferences:user.preferences||{startPage:'start',compact:false,reducedMotion:false,motion:'full',theme:'light'},activeSessions:(await s.list('session',user.id)).filter(x=>x.expires>Date.now()).length,storage:user.role==='admin'?{backend:storageConfig(env).backend,used:(await s.get('system','storage'))?.bytes||0,limit:storageConfig(env).limit}:null}));
  if(path==='/settings'&&req.method==='POST'){const data=await body(req);return tx(async s=>{const fresh=await s.get('user',user.id);const name=text(data.name,120,true),phone=text(data.phone,40),jobTitle=text(data.jobTitle,100);assert(['start','faelle'].includes(data.startPage),'Bitte eine gültige Startansicht wählen.');assert(typeof data.compact==='boolean'&&typeof data.reducedMotion==='boolean','Ungültige Anzeigeeinstellung.');assert(['light','system','dark'].includes(data.theme),'Bitte eine gültige Darstellung wählen.');assert(data.motion===undefined||['full','calm','off'].includes(data.motion),'Bitte eine gültige Animationseinstellung wählen.');await security.changePhone(s,fresh,phone);fresh.name=name;fresh.phone=phone;fresh.jobTitle=jobTitle;const motion=data.motion|| (data.reducedMotion?'off':'full');fresh.preferences={caseEmails:data.caseEmails!==false,startPage:data.startPage,compact:data.compact,reducedMotion:motion==='off',motion:internal(user)?motion:(data.reducedMotion?'off':'full'),theme:internal(user)?data.theme:'light'};await s.put('user',fresh,fresh.companyId||'internal');return {user:publicUser(fresh),message:'Deine Einstellungen wurden gespeichert.'};});}
  if(path==='/sessions/revoke-others'&&req.method==='POST'){const data=await body(req);assert(data.confirmed===true,'Bitte Abmeldung der anderen Geräte bestätigen.');return tx(async s=>{let count=0;for(const other of await s.list('session',user.id))if(other.id!==session.id){await s.remove('session',other.id);count++;}return {message:'Andere Sitzungen wurden abgemeldet.',revoked:count};});}
