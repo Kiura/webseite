@@ -150,6 +150,10 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
    assert((req.headers['content-type']||'').startsWith('application/x-www-form-urlencoded'),'Ungültige Rückmeldung.',415);
    const data=Object.fromEntries(new URLSearchParams((await body(req,16000,true)).toString()));
    assert(typeof data.logout_token==='string'&&data.logout_token.length<=8192,'Ungültige Rückmeldung.',400);
+   // Begrenzung vor der Signaturprüfung. Danach hätte jeder Aufrufer ohne
+   // jeden Nachweis unbegrenzt Ed25519-Prüfungen auslösen können: die
+   // Begrenzung lag hinter der teuersten Arbeit, die sie schützen soll.
+   await tx(s=>rate(s,'backchannel:'+ip(req),60));
    const {jwtVerify,createRemoteJWKSet}=await jose();
    const address=settings('0account').keys;
    if(!keysets.has(address))keysets.set(address,createRemoteJWKSet(new URL(address),{timeoutDuration:10000}));
@@ -160,7 +164,7 @@ function createOAuth({env,origin,tx,rate,ip,body,auth,issueSession,mail,referral
    assert(!('nonce'in payload),'Ungültige Rückmeldung.',400);
    assert(payload.events&&typeof payload.events==='object'&&'http://schemas.openid.net/event/backchannel-logout'in payload.events,'Ungültige Rückmeldung.',400);
    assert(typeof payload.sid==='string'&&payload.sid.length>0&&payload.sid.length<=64,'Ungültige Rückmeldung.',400);
-   await tx(async s=>{await rate(s,'backchannel:'+ip(req),60);for(const session of await s.list('session'))if(session.idp?.provider==='0account'&&session.idp.sid===payload.sid)await s.remove('session',session.id);});
+   await tx(async s=>{for(const session of await s.list('session'))if(session.idp?.provider==='0account'&&session.idp.sid===payload.sid)await s.remove('session',session.id);});
    return {ok:true};
   }catch(e){
    // Fehlkonfiguration und Ausfälle behalten ihren Status; nur ein ungültiger
